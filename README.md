@@ -285,7 +285,7 @@ cd infra
   cd /app &&
   PYTHONPATH=/app python scripts/smoke_uat.py \
     --api http://localhost:8000/api \
-    --username uat_admin \
+    --username admin \
     --password "UatPass123!" \
     --include-download
 '
