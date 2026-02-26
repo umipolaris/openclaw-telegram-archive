@@ -22,6 +22,7 @@
 - 비동기 파이프라인: FastAPI + Celery + Redis 상태머신 처리
 - 중복 방지 저장: SHA256 기반 파일 저장 + 논리 링크
 - 계층형 IA UI: Archive/Timeline/Search/Review Queue/Rules/Admin
+- 아카이브 생산성 UI: 상단 1줄 `간편게시`, `상세게시` 진입, 검색/필터·보기/컬럼설정 접기/펼치기
 - 운영자 중심 규칙 관리: UI 편집 + JSON import/export + backfill
 - 대용량 대비: Postgres 인덱스/페이지네이션/가상화 리스트
 - 검색 확장: Postgres FTS 기본 + Meilisearch 옵션
@@ -130,6 +131,7 @@ scripts/check_sensitive_guard.sh --all
 | 감사 로그 내보내기 | csv/json 포맷 export | `Admin > 운영/감사 로그` | `GET /api/admin/audit-logs/export` |
 | ingest 작업 추적 | 실패/재시도 대상 작업 및 이벤트 조회 | `Admin > 운영/감사 로그` | `GET /api/admin/ingest-jobs`, `GET /api/admin/ingest-jobs/{job_id}/events` |
 | ingest 수동 재처리 | 재큐잉/파일 복구 업로드 | `Admin > 운영/감사 로그` | `POST /api/admin/ingest-jobs/{job_id}/requeue`, `POST /api/admin/ingest-jobs/{job_id}/recover-upload` |
+| 백업/복구 | DB/첨부/설정 백업 생성, 다운로드/삭제, 복구 실행 | `Admin > 백업/복구` | `GET /api/admin/backups/files`, `POST /api/admin/backups/run/{kind}`, `POST /api/admin/backups/restore/*`, `DELETE /api/admin/backups/files/{kind}/{filename}` |
 | 운영 리포트 | 주간 운영지표 생성/조회 | `Admin > 운영/감사 로그` | `POST /api/admin/ops-reports/generate`, `GET /api/admin/ops-reports` |
 
 ### 추가 관리자 계정 생성 예시
@@ -181,6 +183,14 @@ make down
 - `make`가 없으면 `cd infra && ./scripts/compose.sh up -d --build`로 동일 실행 가능합니다.
 - `./scripts/compose.sh`는 `docker compose`와 `docker-compose`를 자동 감지합니다.
 
+## 아카이브 UI 사용 요약 (현재)
+- 페이지 최상단 우측: 한 줄형 `간편게시` 입력(`파일 1개 + 설명 + 간편게시`), 등록 즉시 목록 갱신
+- 게시물 목록 카드 상단: 슬림 툴바
+  - `검색/필터` 버튼: 검색어/검토상태/정렬 조건 패널 토글
+  - `보기/컬럼설정` 버튼: 컴팩트 보기, 컬럼 표시/순서, 프리셋 패널 토글
+  - `상세게시` 버튼: `/manual-post` 상세 입력 화면 이동
+- 목록 행 클릭: 우측 패널이 아닌 `문서 상세 팝업(모달)` 오픈
+
 ## 로컬 데이터 저장 위치
 Docker Compose는 운영 데이터(파일/DB/캐시/검색인덱스)를 `infra/data` 아래에 저장합니다.
 
@@ -189,6 +199,55 @@ Docker Compose는 운영 데이터(파일/DB/캐시/검색인덱스)를 `infra/d
 - Redis: `infra/data/redis`
 - Meilisearch index: `infra/data/meili`
 - ingest 임시파일: `infra/data/ingest_tmp`
+- 백업 파일(DB): `infra/data/backup/db`
+- 백업 파일(첨부): `infra/data/backup/objects`
+- 백업 파일(설정): `infra/data/backup/config`
+
+## 백업/복구 운영 (웹 + CLI)
+웹(Admin) 기준:
+- `Admin > 백업/복구` 탭에서 `DB/첨부파일/설정` 백업 실행
+- 백업 파일 목록에서 다운로드/삭제 가능
+- 복구는 DB/첨부/설정 각각 별도 실행
+  - 설정은 `preview/apply` 모드 지원
+
+CLI 기준:
+```bash
+# 백업
+make backup-db
+make backup-objects
+make backup-config
+make backup-all
+
+# 복구 (확인 플래그 필요)
+make restore-db BACKUP_FILE=./infra/data/backup/db/archive_archive_YYYYMMDD_HHMMSS.dump CONFIRM=YES
+make restore-objects BACKUP_FILE=./infra/data/backup/objects/objects_YYYYMMDD_HHMMSS.tar.gz CONFIRM=YES
+make restore-config BACKUP_FILE=./infra/data/backup/config/config_YYYYMMDD_HHMMSS.tar.gz MODE=preview
+```
+
+백업 API 예시(Admin 세션 필요):
+```bash
+# 1) 백업 파일 목록
+curl -b /tmp/archive.cookie "http://localhost:8000/api/admin/backups/files?kind=db"
+
+# 2) 백업 생성
+curl -X POST -b /tmp/archive.cookie "http://localhost:8000/api/admin/backups/run/db"
+curl -X POST -b /tmp/archive.cookie "http://localhost:8000/api/admin/backups/run-all"
+
+# 3) 백업 다운로드
+curl -L -b /tmp/archive.cookie \
+  "http://localhost:8000/api/admin/backups/files/db/<FILENAME>/download" \
+  -o ./db-backup.dump
+
+# 4) 백업 삭제
+curl -X DELETE -b /tmp/archive.cookie \
+  "http://localhost:8000/api/admin/backups/files/db/<FILENAME>"
+
+# 5) DB 복구
+curl -X POST -b /tmp/archive.cookie \
+  -H 'Content-Type: application/json' \
+  -d '{"filename":"<FILENAME>","target_db":"archive_restore","confirm":true}' \
+  "http://localhost:8000/api/admin/backups/restore/db"
+```
 
 ## 읽기 전용 모드 (cut-over/점검용)
 `READ_ONLY_MODE=true`이면 API 쓰기 요청(`POST/PUT/PATCH/DELETE`)을 차단합니다.
@@ -614,7 +673,7 @@ curl -b /tmp/archive.cookie \
   "http://localhost:8000/api/documents/<DOC_ID>/versions/diff?from_version_no=1&to_version_no=3"
 ```
 
-Archive 화면 목록/상세에서 파일명을 클릭하면 다운로드(또는 브라우저 미리보기)할 수 있고, 우측 Detail 패널에서 게시물 편집/삭제, 파일 교체/삭제도 수행할 수 있습니다.
+Archive 화면 목록/상세에서 파일명을 클릭하면 다운로드(또는 브라우저 미리보기)할 수 있고, `문서 상세 팝업(모달)`에서 게시물 편집/삭제, 파일 교체/삭제도 수행할 수 있습니다.
 
 ## 상태 머신
 `RECEIVED -> STORED -> EXTRACTED -> CLASSIFIED -> INDEXED -> PUBLISHED`
