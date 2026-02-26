@@ -1,0 +1,154 @@
+name: doc-archive
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-archive}
+      POSTGRES_USER: ${POSTGRES_USER:-archive}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-archive_pw}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-archive} -d ${POSTGRES_DB:-archive}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_secret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./data/minio:/data
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_API_KEY:-}
+      MEILI_ENV: ${MEILI_ENV:-development}
+      MEILI_NO_ANALYTICS: "true"
+    ports:
+      - "7700:7700"
+    volumes:
+      - ./data/meili:/meili_data
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./env/.env.common
+      - ./env/.env.${APP_PROFILE:-dev}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      meilisearch:
+        condition: service_started
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../backend:/app
+      - ./data/ingest_tmp:/tmp/doc-archive-ingest
+
+  worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./env/.env.common
+      - ./env/.env.${APP_PROFILE:-dev}
+    depends_on:
+      - api
+      - redis
+      - meilisearch
+    command: celery -A app.worker.celery_app.celery_app worker -l info -Q ingest,backfill,search,reports
+    volumes:
+      - ../backend:/app
+      - ./data/ingest_tmp:/tmp/doc-archive-ingest
+
+  beat:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./env/.env.common
+      - ./env/.env.${APP_PROFILE:-dev}
+    depends_on:
+      - redis
+      - worker
+    command: celery -A app.worker.celery_app.celery_app beat -l info
+    volumes:
+      - ../backend:/app
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./env/.env.common
+      - ./env/.env.${APP_PROFILE:-dev}
+    depends_on:
+      - api
+    command: npm run dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+    ports:
+      - "9090:9090"
+
+  backup:
+    image: alpine:3.20
+    profiles: ["prod"]
+    env_file:
+      - ./env/.env.common
+      - ./env/.env.prod
+    volumes:
+      - ./scripts:/scripts
+      - ./data/backup:/backup
+    entrypoint: ["sh", "/scripts/backup-cron.sh"]
+    depends_on:
+      - postgres
+      - minio
+
+volumes:
+  frontend_node_modules:
+  frontend_next:

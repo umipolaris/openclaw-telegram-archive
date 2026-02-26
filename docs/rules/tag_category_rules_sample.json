@@ -1,0 +1,61 @@
+{
+  "default_category": "기타",
+  "category_rules": [],
+  "tag_category_rules": [
+    {
+      "category": "문서관리",
+      "tags": ["control procedure", "관리절차", "문서정책", "sample policy"],
+      "match": "any"
+    },
+    {
+      "category": "회의",
+      "tags": ["회의", "meeting", "minutes", "agenda", "action item"],
+      "match": "any"
+    },
+    {
+      "category": "도면",
+      "tags": ["drawing", "cad", "layout", "ga drawing", "rev"],
+      "match": "any"
+    },
+    {
+      "category": "일정",
+      "tags": ["일정", "schedule", "gantt", "timeline", "milestone"],
+      "match": "any"
+    },
+    {
+      "category": "계약",
+      "tags": ["계약", "contract", "proposal", "agreement", "rfp"],
+      "match": "any"
+    },
+    {
+      "category": "인허가",
+      "tags": ["permit", "license", "approval", "regulatory", "submission"],
+      "match": "any"
+    },
+    {
+      "category": "기술검토",
+      "tags": ["review", "검토", "analysis", "report", "comparison"],
+      "match": "any"
+    },
+    {
+      "category": "장비/매뉴얼",
+      "tags": ["manual", "operation", "maintenance", "specification", "datasheet"],
+      "match": "any"
+    },
+    {
+      "category": "대외문서",
+      "tags": ["official letter", "letter", "inquiry", "response", "notice"],
+      "match": "any"
+    },
+    {
+      "category": "업체제출",
+      "tags": ["vendor", "partner", "submission", "origin:external"],
+      "match": "any"
+    },
+    {
+      "category": "내부자료",
+      "tags": ["origin:internal", "내부", "internal", "draft", "working"],
+      "match": "any"
+    }
+  ]
+}

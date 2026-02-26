@@ -1,0 +1,38 @@
+groups:
+  - name: archive-alerts
+    rules:
+      - alert: ApiDown
+        expr: up{job="api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API down"
+          description: "FastAPI service is not reachable"
+
+      - alert: HighIngestFailureRate
+        expr: ingest_success_rate_1h < 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ingest success rate is low"
+          description: "Check ingest backlog, rules, and worker health"
+
+      - alert: IngestBacklogHigh
+        expr: ingest_jobs_backlog > 200
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ingest backlog is high"
+          description: "Pending ingest jobs exceeded 200 for over 10m"
+
+      - alert: SearchLatencyP95High
+        expr: histogram_quantile(0.95, sum(rate(search_request_duration_seconds_bucket[5m])) by (le)) > 1.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Search latency P95 is high"
+          description: "Document list/search p95 latency exceeded 1.5s"

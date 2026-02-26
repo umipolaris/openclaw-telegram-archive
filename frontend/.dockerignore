@@ -1,0 +1,10 @@
+.git
+.next
+.next*
+node_modules
+out
+dist
+coverage
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*

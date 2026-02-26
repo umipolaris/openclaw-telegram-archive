@@ -1,0 +1,16 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package deploy artifact
+        run: tar -czf deploy_bundle.tgz backend frontend infra
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deploy-bundle
+          path: deploy_bundle.tgz

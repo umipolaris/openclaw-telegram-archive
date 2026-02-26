@@ -1,0 +1,47 @@
+name: Nightly Load Test
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start stack
+        run: docker compose up -d postgres redis minio meilisearch api worker
+
+      - name: Wait for API
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/api/health >/dev/null; then
+              echo "api is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "api health timeout"
+          exit 1
+
+      - name: Bootstrap admin
+        run: docker compose exec -T api python scripts/bootstrap_admin.py --username admin --password 'ChangeMe123!'
+
+      - name: Run k6 ingest/query scenario
+        run: |
+          docker run --rm --network host \
+            -e BASE_URL=http://localhost:8000 \
+            -e ADMIN_USER=admin \
+            -e ADMIN_PASSWORD=ChangeMe123! \
+            -v "$PWD/../backend/tests/load:/scripts" \
+            grafana/k6:0.51.0 run /scripts/k6_ingest_and_query.js
+
+      - name: Teardown
+        if: always()
+        run: docker compose down

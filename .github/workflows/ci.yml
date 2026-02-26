@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  api_contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install backend deps
+        run: |
+          cd backend
+          pip install -U pip
+          pip install .
+      - name: Install frontend deps
+        run: |
+          cd frontend
+          npm ci || npm install
+      - name: Generate OpenAPI + frontend types
+        run: |
+          cd frontend
+          npm run gen:api-types
+      - name: Ensure generated artifacts are committed
+        run: git diff --exit-code -- frontend/openapi/openapi.json frontend/lib/api-types.generated.ts
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -U pip
+      - run: pip install .[test]
+      - run: python scripts/check_migration_rules.py
+      - run: pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci || npm install
+      - run: npm run build

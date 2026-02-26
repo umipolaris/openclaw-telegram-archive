@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #f7f7f2;
+  --foreground: #0f172a;
+  --panel: #ffffff;
+  --line: #d6d3d1;
+  --accent: #0f766e;
+  --accent-soft: #ccfbf1;
+}
+
+body {
+  background: radial-gradient(circle at 0% 0%, #f0fdf4 0%, var(--background) 45%);
+  color: var(--foreground);
+  font-family: "Pretendard", "Noto Sans KR", sans-serif;
+}
