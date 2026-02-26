@@ -75,6 +75,10 @@ type DocumentDetailResponse = {
   versions: DocumentVersionItem[];
 };
 
+type ManualPostCategoryOptionsResponse = {
+  categories: string[];
+};
+
 interface PageProps {
   params: { id: string };
 }
@@ -123,6 +127,10 @@ export default function DocumentDetailPage({ params }: PageProps) {
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editCategoryName, setEditCategoryName] = useState("");
+  const [isCustomCategory, setIsCustomCategory] = useState(false);
+  const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
+  const [categoryOptionsLoading, setCategoryOptionsLoading] = useState(true);
+  const [categoryOptionsError, setCategoryOptionsError] = useState("");
   const [editEventDate, setEditEventDate] = useState("");
   const [editTags, setEditTags] = useState("");
   const [editReviewStatus, setEditReviewStatus] = useState<ReviewStatus>("NONE");
@@ -151,10 +159,42 @@ export default function DocumentDetailPage({ params }: PageProps) {
   }, [params.id]);
 
   useEffect(() => {
+    let cancelled = false;
+    async function loadCategoryOptions() {
+      setCategoryOptionsLoading(true);
+      setCategoryOptionsError("");
+      try {
+        const res = await apiGet<ManualPostCategoryOptionsResponse>("/documents/manual-post/category-options");
+        if (cancelled) return;
+        const names = Array.from(
+          new Set(
+            (res.categories ?? [])
+              .map((name) => name?.trim())
+              .filter((name): name is string => Boolean(name)),
+          ),
+        );
+        setCategoryOptions(names);
+      } catch (err) {
+        if (!cancelled) {
+          setCategoryOptionsError(err instanceof Error ? err.message : "카테고리 목록 로드 실패");
+          setCategoryOptions([]);
+        }
+      } finally {
+        if (!cancelled) setCategoryOptionsLoading(false);
+      }
+    }
+    void loadCategoryOptions();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!detail) {
       setEditTitle("");
       setEditDescription("");
       setEditCategoryName("");
+      setIsCustomCategory(false);
       setEditEventDate("");
       setEditTags("");
       setEditReviewStatus("NONE");
@@ -165,7 +205,9 @@ export default function DocumentDetailPage({ params }: PageProps) {
     }
     setEditTitle(detail.title);
     setEditDescription(detail.description || "");
-    setEditCategoryName(detail.category || "");
+    const initialCategory = detail.category || "";
+    setEditCategoryName(initialCategory);
+    setIsCustomCategory(Boolean(initialCategory));
     setEditEventDate(detail.event_date || "");
     setEditTags(detail.tags.join(", "));
     setEditReviewStatus(detail.review_status);
@@ -183,6 +225,16 @@ export default function DocumentDetailPage({ params }: PageProps) {
     setVersionSnapshotError("");
     setSelectedVersionNo(null);
   }, [detail]);
+
+  useEffect(() => {
+    if (!editCategoryName.trim()) {
+      setIsCustomCategory(false);
+      return;
+    }
+    if (categoryOptions.includes(editCategoryName)) {
+      setIsCustomCategory(false);
+    }
+  }, [categoryOptions, editCategoryName]);
 
   useEffect(() => {
     if (!detail || detail.versions.length === 0) {
@@ -345,12 +397,37 @@ export default function DocumentDetailPage({ params }: PageProps) {
                 onChange={(e) => setEditDescription(e.target.value)}
                 placeholder="설명"
               />
-              <input
+              <select
                 className="w-full rounded border border-stone-300 px-2 py-1 text-sm"
-                value={editCategoryName}
-                onChange={(e) => setEditCategoryName(e.target.value)}
-                placeholder="카테고리명"
-              />
+                value={isCustomCategory ? "__custom__" : editCategoryName}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value === "__custom__") {
+                    setIsCustomCategory(true);
+                    return;
+                  }
+                  setIsCustomCategory(false);
+                  setEditCategoryName(value);
+                }}
+              >
+                <option value="">카테고리 선택</option>
+                {categoryOptions.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+                <option value="__custom__">직접 입력</option>
+              </select>
+              {isCustomCategory ? (
+                <input
+                  className="w-full rounded border border-stone-300 px-2 py-1 text-sm"
+                  value={editCategoryName}
+                  onChange={(e) => setEditCategoryName(e.target.value)}
+                  placeholder="신규 카테고리명"
+                />
+              ) : null}
+              {categoryOptionsLoading ? <p className="text-xs text-stone-500">카테고리 목록 로딩 중...</p> : null}
+              {categoryOptionsError ? <p className="text-xs text-amber-700">목록 로드 실패: {categoryOptionsError}</p> : null}
               <input
                 className="w-full rounded border border-stone-300 px-2 py-1 text-sm"
                 type="date"

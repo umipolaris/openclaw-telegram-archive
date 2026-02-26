@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api";
 
 export function buildApiUrl(path: string): string {
   return `${API_BASE}${path}`;
@@ -11,7 +11,25 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     ...init,
   });
   if (!res.ok) {
-    throw new Error(`API error: ${res.status}`);
+    let detail = "";
+    try {
+      const body = (await res.json()) as { detail?: unknown };
+      const raw = body?.detail;
+      if (typeof raw === "string") {
+        detail = raw;
+      } else if (raw && typeof raw === "object") {
+        detail = JSON.stringify(raw);
+      } else if (raw != null) {
+        detail = String(raw);
+      }
+    } catch {
+      try {
+        detail = await res.text();
+      } catch {
+        detail = "";
+      }
+    }
+    throw new Error(detail ? `API error: ${res.status} ${detail}` : `API error: ${res.status}`);
   }
   return (await res.json()) as T;
 }

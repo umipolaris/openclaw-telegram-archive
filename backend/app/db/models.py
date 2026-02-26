@@ -63,7 +63,26 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[UserRole] = mapped_column(Enum(UserRole, name="user_role"), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+
+
+class SecurityPolicy(Base):
+    __tablename__ = "security_policies"
+
+    scope: Mapped[str] = mapped_column(String(32), primary_key=True, default="auth")
+    password_min_length: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    require_uppercase: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    require_lowercase: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    require_digit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    require_special: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    max_failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    lockout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=900)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))

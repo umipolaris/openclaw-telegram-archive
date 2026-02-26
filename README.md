@@ -93,6 +93,22 @@ scripts/check_sensitive_guard.sh --staged
 scripts/check_sensitive_guard.sh --all
 ```
 
+## 로그인 보안 설정
+- 비밀번호 정책: 관리자 UI에서 최소 길이/문자 조건(대문자/소문자/숫자/특수문자) 편집 가능
+- 로그인 실패 잠금: 관리자 UI에서 허용 횟수/잠금 시간(초) 편집 가능
+- 관리자 UI:
+  - 사용자 생성 시 비밀번호 2회 입력 확인
+  - 사용자 비밀번호 재설정 시 비밀번호 2회 입력 확인
+  - 잠금 계정은 `잠금 해제` 버튼으로 즉시 해제 가능
+  - `Admin > 사용자 관리 > 로그인 보안 정책`에서 저장 시 즉시 반영
+
+환경변수:
+- `PASSWORD_MIN_LENGTH` (기본 `10`)
+- `AUTH_MAX_FAILED_ATTEMPTS` (기본 `5`)
+- `AUTH_LOCKOUT_SECONDS` (기본 `900`)
+- `SESSION_HTTPS_ONLY` (운영 HTTPS 환경에서 `true` 권장)
+- `SESSION_SAME_SITE` (기본 `lax`)
+
 ## 관리자/권한 표
 이 시스템은 `ADMIN` 계정을 여러 개 둘 수 있습니다.  
 각 관리자의 수행 작업은 감사 로그에 `actor_user_id`/`actor_username`으로 남습니다.
@@ -109,6 +125,7 @@ scripts/check_sensitive_guard.sh --all
 | 기능 | 설명 | UI 위치 | 주요 API |
 | --- | --- | --- | --- |
 | 사용자 관리 | 사용자 생성/권한변경/활성화/비밀번호 재설정 | `Admin > 사용자 관리` | `GET/POST/PATCH /api/admin/users` |
+| 로그인 보안 정책 | 비밀번호 정책/잠금 정책 편집 | `Admin > 사용자 관리` | `GET/PATCH /api/admin/security-policy` |
 | 감사 로그 조회 | 누가/언제/무엇 변경했는지 조회 | `Admin > 운영/감사 로그` | `GET /api/admin/audit-logs` |
 | 감사 로그 내보내기 | csv/json 포맷 export | `Admin > 운영/감사 로그` | `GET /api/admin/audit-logs/export` |
 | ingest 작업 추적 | 실패/재시도 대상 작업 및 이벤트 조회 | `Admin > 운영/감사 로그` | `GET /api/admin/ingest-jobs`, `GET /api/admin/ingest-jobs/{job_id}/events` |
@@ -344,6 +361,16 @@ curl -i -c /tmp/archive.cookie \
   -d '{"username":"admin","password":"ChangeMe123!"}' \
   http://localhost:8000/api/auth/login
 
+# 2-1) 본인 비밀번호 변경(현재 비밀번호 확인 + 새 비밀번호 2회 입력)
+curl -X POST http://localhost:8000/api/auth/change-password \
+  -b /tmp/archive.cookie \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "current_password":"ChangeMe123!",
+    "new_password":"StrongPass123!",
+    "confirm_new_password":"StrongPass123!"
+  }'
+
 # 3) 보호 API 호출 (쿠키 사용)
 curl -b /tmp/archive.cookie "http://localhost:8000/api/review-queue?page=1&size=20"
 
@@ -378,11 +405,27 @@ curl -X PATCH http://localhost:8000/api/admin/users/<USER_ID> \
 curl -X PATCH http://localhost:8000/api/admin/users/<USER_ID> \
   -b /tmp/archive.cookie \
   -H 'Content-Type: application/json' \
-  -d '{"password":"TempPass123!"}'
+  -d '{"password":"TempPass123!","password_confirm":"TempPass123!"}'
 
 # 8-1) 사용자 계정 삭제
 curl -X DELETE http://localhost:8000/api/admin/users/<USER_ID> \
   -b /tmp/archive.cookie
+
+# 8-2) 로그인 보안 정책 조회/변경
+curl -b /tmp/archive.cookie "http://localhost:8000/api/admin/security-policy"
+
+curl -X PATCH http://localhost:8000/api/admin/security-policy \
+  -b /tmp/archive.cookie \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "password_min_length": 12,
+    "require_uppercase": true,
+    "require_lowercase": true,
+    "require_digit": true,
+    "require_special": false,
+    "max_failed_attempts": 5,
+    "lockout_seconds": 1800
+  }'
 
 # 9) 저장 필터 생성/조회/삭제
 curl -X POST http://localhost:8000/api/saved-filters \

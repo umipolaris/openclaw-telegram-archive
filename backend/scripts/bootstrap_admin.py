@@ -17,9 +17,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.core.security import hash_password
+from app.core.config import get_settings
+from app.core.security import hash_password, validate_password_strength
 from app.db.models import User, UserRole
 from app.db.session import SessionLocal
+
+
+def ensure_password_strength(password: str) -> None:
+    settings = get_settings()
+    errors = validate_password_strength(password, min_length=settings.password_min_length)
+    if errors:
+        raise SystemExit("약한 비밀번호입니다: " + " | ".join(errors))
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,6 +61,7 @@ def main() -> None:
             if args.reset_password:
                 if not args.password:
                     raise SystemExit("--reset-password 사용 시 --password는 필수입니다.")
+                ensure_password_strength(args.password)
                 user.password_hash = hash_password(args.password)
                 changed = True
 
@@ -66,6 +75,7 @@ def main() -> None:
 
         if not args.password:
             raise SystemExit("신규 생성 시 --password는 필수입니다.")
+        ensure_password_strength(args.password)
 
         user = User(
             username=args.username,

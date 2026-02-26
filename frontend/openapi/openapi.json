@@ -79,6 +79,60 @@
         }
       }
     },
+    "/api/admin/security-policy": {
+      "get": {
+        "summary": "Get Security Policy",
+        "operationId": "get_security_policy_api_admin_security_policy_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSecurityPolicy"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update Security Policy",
+        "operationId": "update_security_policy_api_admin_security_policy_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAuthSecurityPolicyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSecurityPolicy"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/admin/users": {
       "get": {
         "summary": "List Users",
@@ -287,6 +341,44 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeleteUserResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/change-password": {
+      "post": {
+        "summary": "Change Password",
+        "operationId": "change_password_api_auth_change_password_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangePasswordResponse"
                 }
               }
             }
@@ -4023,6 +4115,64 @@
         ],
         "title": "AuditLogsResponse"
       },
+      "AuthSecurityPolicy": {
+        "properties": {
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": "auth"
+          },
+          "password_min_length": {
+            "type": "integer",
+            "title": "Password Min Length",
+            "default": 10
+          },
+          "require_uppercase": {
+            "type": "boolean",
+            "title": "Require Uppercase",
+            "default": true
+          },
+          "require_lowercase": {
+            "type": "boolean",
+            "title": "Require Lowercase",
+            "default": true
+          },
+          "require_digit": {
+            "type": "boolean",
+            "title": "Require Digit",
+            "default": true
+          },
+          "require_special": {
+            "type": "boolean",
+            "title": "Require Special",
+            "default": true
+          },
+          "max_failed_attempts": {
+            "type": "integer",
+            "title": "Max Failed Attempts",
+            "default": 5
+          },
+          "lockout_seconds": {
+            "type": "integer",
+            "title": "Lockout Seconds",
+            "default": 900
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "title": "AuthSecurityPolicy"
+      },
       "AuthUser": {
         "properties": {
           "id": {
@@ -4461,6 +4611,48 @@
         ],
         "title": "Body_replace_document_file_api_documents__id__files__file_id__replace_post"
       },
+      "ChangePasswordRequest": {
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "title": "Current Password"
+          },
+          "new_password": {
+            "type": "string",
+            "title": "New Password"
+          },
+          "confirm_new_password": {
+            "type": "string",
+            "title": "Confirm New Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password",
+          "confirm_new_password"
+        ],
+        "title": "ChangePasswordRequest"
+      },
+      "ChangePasswordResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "ok"
+          },
+          "changed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Changed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "changed_at"
+        ],
+        "title": "ChangePasswordResponse"
+      },
       "CreateUserRequest": {
         "properties": {
           "username": {
@@ -4471,6 +4663,10 @@
             "type": "string",
             "title": "Password"
           },
+          "password_confirm": {
+            "type": "string",
+            "title": "Password Confirm"
+          },
           "role": {
             "$ref": "#/components/schemas/UserRole",
             "default": "VIEWER"
@@ -4479,7 +4675,8 @@
         "type": "object",
         "required": [
           "username",
-          "password"
+          "password",
+          "password_confirm"
         ],
         "title": "CreateUserRequest"
       },
@@ -7699,6 +7896,55 @@
         ],
         "title": "TimelineResponse"
       },
+      "UpdateAuthSecurityPolicyRequest": {
+        "properties": {
+          "password_min_length": {
+            "type": "integer",
+            "maximum": 128.0,
+            "minimum": 6.0,
+            "title": "Password Min Length"
+          },
+          "require_uppercase": {
+            "type": "boolean",
+            "title": "Require Uppercase",
+            "default": true
+          },
+          "require_lowercase": {
+            "type": "boolean",
+            "title": "Require Lowercase",
+            "default": true
+          },
+          "require_digit": {
+            "type": "boolean",
+            "title": "Require Digit",
+            "default": true
+          },
+          "require_special": {
+            "type": "boolean",
+            "title": "Require Special",
+            "default": true
+          },
+          "max_failed_attempts": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Max Failed Attempts"
+          },
+          "lockout_seconds": {
+            "type": "integer",
+            "maximum": 86400.0,
+            "minimum": 60.0,
+            "title": "Lockout Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "password_min_length",
+          "max_failed_attempts",
+          "lockout_seconds"
+        ],
+        "title": "UpdateAuthSecurityPolicyRequest"
+      },
       "UpdateUserRequest": {
         "properties": {
           "role": {
@@ -7725,14 +7971,35 @@
           "password": {
             "anyOf": [
               {
-                "type": "string",
-                "minLength": 8
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Password"
+          },
+          "password_confirm": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password Confirm"
+          },
+          "unlock_account": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unlock Account"
           }
         },
         "type": "object",
@@ -7764,6 +8031,23 @@
           "is_active": {
             "type": "boolean",
             "title": "Is Active"
+          },
+          "failed_login_attempts": {
+            "type": "integer",
+            "title": "Failed Login Attempts",
+            "default": 0
+          },
+          "locked_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locked Until"
           },
           "created_at": {
             "type": "string",

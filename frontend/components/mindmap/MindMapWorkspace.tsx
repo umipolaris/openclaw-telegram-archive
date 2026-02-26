@@ -10,6 +10,8 @@ import {
   ChevronRight,
   FileText,
   FolderOpen,
+  Minus,
+  Plus,
   RotateCcw,
   Search,
   Tags,
@@ -104,6 +106,9 @@ const UNTAGGED_LABEL = "(태그없음)";
 const CATEGORY_MAX = 12;
 const TAG_MAX = 10;
 const DOC_MAX = 8;
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 2.0;
+const ZOOM_STEP = 0.15;
 const COLLISION_PADDING = 18;
 const RING_STEP = 30;
 const MAX_RINGS = 10;
@@ -374,6 +379,7 @@ export function MindMapWorkspace() {
   const [data, setData] = useState<MindMapTreeResponse>(EMPTY_DATA);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [zoomLevel, setZoomLevel] = useState(1);
 
   const loadTree = useCallback(async () => {
     setLoading(true);
@@ -718,6 +724,7 @@ export function MindMapWorkspace() {
               setSelectedCategory(null);
               setSelectedTag(null);
               setPage(1);
+              setZoomLevel(1);
             }}
           >
             <RotateCcw className="h-3.5 w-3.5" />
@@ -733,9 +740,34 @@ export function MindMapWorkspace() {
       <article className="rounded-2xl border border-sky-100 bg-gradient-to-br from-slate-50 via-sky-50/40 to-cyan-50/50 p-4 shadow-[0_14px_38px_rgba(14,116,144,0.14)]">
         <div className="mb-2 flex items-center justify-between">
           <p className="text-sm font-semibold text-slate-800">연관관계 마인드맵</p>
-          <span className="rounded-full border border-white/80 bg-white/85 px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">
-            Smart Radial Map
-          </span>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex items-center rounded-full border border-slate-300 bg-white/90 p-1 shadow-sm">
+              <button
+                type="button"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => setZoomLevel((prev) => clamp(prev - ZOOM_STEP, ZOOM_MIN, ZOOM_MAX))}
+                disabled={zoomLevel <= ZOOM_MIN}
+                aria-label="마인드맵 축소"
+                title="축소"
+              >
+                <Minus className="h-4 w-4" />
+              </button>
+              <span className="px-1.5 text-[11px] font-semibold text-slate-600">{Math.round(zoomLevel * 100)}%</span>
+              <button
+                type="button"
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => setZoomLevel((prev) => clamp(prev + ZOOM_STEP, ZOOM_MIN, ZOOM_MAX))}
+                disabled={zoomLevel >= ZOOM_MAX}
+                aria-label="마인드맵 확대"
+                title="확대"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
+            <span className="rounded-full border border-white/80 bg-white/85 px-3 py-1 text-[11px] font-semibold text-slate-600 shadow-sm">
+              Smart Radial Map
+            </span>
+          </div>
         </div>
         <div className="overflow-x-auto rounded-2xl border border-sky-100 bg-white/80 shadow-inner">
           <svg viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`} className="h-[660px] w-full min-w-[980px]">
@@ -771,136 +803,137 @@ export function MindMapWorkspace() {
                 <path d="M0,0 L0,7 L7,3.5 z" fill="#6382a7" />
               </marker>
             </defs>
+            <g transform={`translate(${CENTER.x} ${CENTER.y}) scale(${zoomLevel}) translate(${-CENTER.x} ${-CENTER.y})`}>
+              <rect x={0} y={0} width={VIEWBOX_WIDTH} height={VIEWBOX_HEIGHT} fill="url(#map-bg-radial)" />
+              <circle cx={CENTER.x} cy={CENTER.y} r={255} fill="none" stroke="#deebfb" strokeDasharray="3 7" />
+              <circle cx={CENTER.x} cy={CENTER.y} r={370} fill="none" stroke="#edf4fd" strokeDasharray="2 9" />
 
-            <rect x={0} y={0} width={VIEWBOX_WIDTH} height={VIEWBOX_HEIGHT} fill="url(#map-bg-radial)" />
-            <circle cx={CENTER.x} cy={CENTER.y} r={255} fill="none" stroke="#deebfb" strokeDasharray="3 7" />
-            <circle cx={CENTER.x} cy={CENTER.y} r={370} fill="none" stroke="#edf4fd" strokeDasharray="2 9" />
+              {mapCategories.map((row) => {
+                const node = categoryNodeMap.get(row.category);
+                if (!node) return null;
+                const start = ellipseBoundaryPoint(CENTER, { x: node.x, y: node.y }, centerEllipse.rx, centerEllipse.ry);
+                const end = ellipseBoundaryPoint({ x: node.x, y: node.y }, CENTER, node.rx, node.ry);
+                return (
+                  <path
+                    key={`edge-cat-${row.category}`}
+                    d={curvedEdgePath(start, end, 0.09)}
+                    fill="none"
+                    stroke="url(#edge-cat-grad)"
+                    strokeWidth={effectiveCategory === row.category ? 2.8 : 1.9}
+                    strokeOpacity={0.9}
+                    markerEnd="url(#mind-arrow)"
+                    filter="url(#edge-glow)"
+                  />
+                );
+              })}
 
-            {mapCategories.map((row) => {
-              const node = categoryNodeMap.get(row.category);
-              if (!node) return null;
-              const start = ellipseBoundaryPoint(CENTER, { x: node.x, y: node.y }, centerEllipse.rx, centerEllipse.ry);
-              const end = ellipseBoundaryPoint({ x: node.x, y: node.y }, CENTER, node.rx, node.ry);
-              return (
-                <path
-                  key={`edge-cat-${row.category}`}
-                  d={curvedEdgePath(start, end, 0.09)}
-                  fill="none"
-                  stroke="url(#edge-cat-grad)"
-                  strokeWidth={effectiveCategory === row.category ? 2.8 : 1.9}
-                  strokeOpacity={0.9}
-                  markerEnd="url(#mind-arrow)"
-                  filter="url(#edge-glow)"
-                />
-              );
-            })}
+              {selectedCategoryNode
+                ? mapTags.map((row) => {
+                    const node = tagNodeMap.get(row.tag);
+                    if (!node) return null;
+                    const from = { x: selectedCategoryNode.x, y: selectedCategoryNode.y };
+                    const start = ellipseBoundaryPoint(from, { x: node.x, y: node.y }, selectedCategoryNode.rx, selectedCategoryNode.ry);
+                    const end = ellipseBoundaryPoint({ x: node.x, y: node.y }, from, node.rx, node.ry);
+                    return (
+                      <path
+                        key={`edge-tag-${row.tag}`}
+                        d={curvedEdgePath(start, end, 0.1)}
+                        fill="none"
+                        stroke="url(#edge-tag-grad)"
+                        strokeWidth={effectiveTag === row.tag ? 2.5 : 1.8}
+                        strokeOpacity={0.92}
+                        markerEnd="url(#mind-arrow)"
+                        filter="url(#edge-glow)"
+                      />
+                    );
+                  })
+                : null}
 
-            {selectedCategoryNode
-              ? mapTags.map((row) => {
-                  const node = tagNodeMap.get(row.tag);
-                  if (!node) return null;
-                  const from = { x: selectedCategoryNode.x, y: selectedCategoryNode.y };
-                  const start = ellipseBoundaryPoint(from, { x: node.x, y: node.y }, selectedCategoryNode.rx, selectedCategoryNode.ry);
-                  const end = ellipseBoundaryPoint({ x: node.x, y: node.y }, from, node.rx, node.ry);
-                  return (
-                    <path
-                      key={`edge-tag-${row.tag}`}
-                      d={curvedEdgePath(start, end, 0.1)}
-                      fill="none"
-                      stroke="url(#edge-tag-grad)"
-                      strokeWidth={effectiveTag === row.tag ? 2.5 : 1.8}
-                      strokeOpacity={0.92}
-                      markerEnd="url(#mind-arrow)"
-                      filter="url(#edge-glow)"
-                    />
-                  );
-                })
-              : null}
+              {selectedTagNode
+                ? mapDocuments.map((row) => {
+                    const node = docNodeMap.get(row.id);
+                    if (!node) return null;
+                    const from = { x: selectedTagNode.x, y: selectedTagNode.y };
+                    const start = ellipseBoundaryPoint(from, { x: node.x, y: node.y }, selectedTagNode.rx, selectedTagNode.ry);
+                    const end = ellipseBoundaryPoint({ x: node.x, y: node.y }, from, node.rx, node.ry);
+                    return (
+                      <path
+                        key={`edge-doc-${row.id}`}
+                        d={curvedEdgePath(start, end, 0.12)}
+                        fill="none"
+                        stroke="url(#edge-doc-grad)"
+                        strokeWidth={1.8}
+                        strokeOpacity={0.85}
+                        markerEnd="url(#mind-arrow)"
+                        filter="url(#edge-glow)"
+                      />
+                    );
+                  })
+                : null}
 
-            {selectedTagNode
-              ? mapDocuments.map((row) => {
-                  const node = docNodeMap.get(row.id);
-                  if (!node) return null;
-                  const from = { x: selectedTagNode.x, y: selectedTagNode.y };
-                  const start = ellipseBoundaryPoint(from, { x: node.x, y: node.y }, selectedTagNode.rx, selectedTagNode.ry);
-                  const end = ellipseBoundaryPoint({ x: node.x, y: node.y }, from, node.rx, node.ry);
-                  return (
-                    <path
-                      key={`edge-doc-${row.id}`}
-                      d={curvedEdgePath(start, end, 0.12)}
-                      fill="none"
-                      stroke="url(#edge-doc-grad)"
-                      strokeWidth={1.8}
-                      strokeOpacity={0.85}
-                      markerEnd="url(#mind-arrow)"
-                      filter="url(#edge-glow)"
-                    />
-                  );
-                })
-              : null}
+              <MindNode
+                id="center"
+                label="게시물 마인드맵"
+                meta={effectiveTag ? `${effectiveCategory} > ${effectiveTag}` : effectiveCategory || "카테고리 선택"}
+                x={CENTER.x}
+                y={CENTER.y}
+                rx={centerEllipse.rx}
+                ry={centerEllipse.ry}
+                fill="#ffffff"
+                stroke="#5f7fa8"
+                strokeWidth={2.4}
+                labelFontSize={19}
+                metaFontSize={11}
+                active
+              />
 
-            <MindNode
-              id="center"
-              label="게시물 마인드맵"
-              meta={effectiveTag ? `${effectiveCategory} > ${effectiveTag}` : effectiveCategory || "카테고리 선택"}
-              x={CENTER.x}
-              y={CENTER.y}
-              rx={centerEllipse.rx}
-              ry={centerEllipse.ry}
-              fill="#ffffff"
-              stroke="#5f7fa8"
-              strokeWidth={2.4}
-              labelFontSize={19}
-              metaFontSize={11}
-              active
-            />
+              {mapCategories.map((row) => {
+                const node = categoryNodeMap.get(row.category);
+                return node ? <MindNode key={node.id} {...node} /> : null;
+              })}
 
-            {mapCategories.map((row) => {
-              const node = categoryNodeMap.get(row.category);
-              return node ? <MindNode key={node.id} {...node} /> : null;
-            })}
+              {mapTags.map((row) => {
+                const node = tagNodeMap.get(row.tag);
+                return node ? <MindNode key={node.id} {...node} /> : null;
+              })}
 
-            {mapTags.map((row) => {
-              const node = tagNodeMap.get(row.tag);
-              return node ? <MindNode key={node.id} {...node} /> : null;
-            })}
+              {mapDocuments.map((row) => {
+                const node = docNodeMap.get(row.id);
+                return node ? <MindNode key={node.id} {...node} /> : null;
+              })}
 
-            {mapDocuments.map((row) => {
-              const node = docNodeMap.get(row.id);
-              return node ? <MindNode key={node.id} {...node} /> : null;
-            })}
-
-            <text
-              x={CENTER.x}
-              y={CENTER.y - 122}
-              textAnchor="middle"
-              className="fill-slate-500 text-[13px] font-semibold"
-              style={{ fontFamily: NODE_FONT_FAMILY }}
-            >
-              카테고리
-            </text>
-            {selectedCategoryPoint ? (
               <text
-                x={(CENTER.x + selectedCategoryPoint.x) / 2}
-                y={(CENTER.y + selectedCategoryPoint.y) / 2 - 10}
+                x={CENTER.x}
+                y={CENTER.y - 122}
                 textAnchor="middle"
-                className="fill-slate-500 text-[12px] font-semibold"
+                className="fill-slate-500 text-[13px] font-semibold"
                 style={{ fontFamily: NODE_FONT_FAMILY }}
               >
-                태그
+                카테고리
               </text>
-            ) : null}
-            {selectedTagPoint && selectedCategoryPoint ? (
-              <text
-                x={(selectedCategoryPoint.x + selectedTagPoint.x) / 2}
-                y={(selectedCategoryPoint.y + selectedTagPoint.y) / 2 - 8}
-                textAnchor="middle"
-                className="fill-slate-500 text-[12px] font-semibold"
-                style={{ fontFamily: NODE_FONT_FAMILY }}
-              >
-                문서
-              </text>
-            ) : null}
+              {selectedCategoryPoint ? (
+                <text
+                  x={(CENTER.x + selectedCategoryPoint.x) / 2}
+                  y={(CENTER.y + selectedCategoryPoint.y) / 2 - 10}
+                  textAnchor="middle"
+                  className="fill-slate-500 text-[12px] font-semibold"
+                  style={{ fontFamily: NODE_FONT_FAMILY }}
+                >
+                  태그
+                </text>
+              ) : null}
+              {selectedTagPoint && selectedCategoryPoint ? (
+                <text
+                  x={(selectedCategoryPoint.x + selectedTagPoint.x) / 2}
+                  y={(selectedCategoryPoint.y + selectedTagPoint.y) / 2 - 8}
+                  textAnchor="middle"
+                  className="fill-slate-500 text-[12px] font-semibold"
+                  style={{ fontFamily: NODE_FONT_FAMILY }}
+                >
+                  문서
+                </text>
+              ) : null}
+            </g>
           </svg>
         </div>
 

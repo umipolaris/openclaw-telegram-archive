@@ -44,7 +44,9 @@ def test_verify_action_token_mismatch_and_tamper():
         verify_action_token(token, job_id=uuid4(), action="retry")
     assert "job mismatch" in str(exc_info.value)
 
-    tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+    payload_b64, signature_b64 = token.split(".", 1)
+    tampered_payload_b64 = ("A" if payload_b64[0] != "A" else "B") + payload_b64[1:]
+    tampered = f"{tampered_payload_b64}.{signature_b64}"
     with pytest.raises(OpenClawActionTokenError) as exc_info:
         verify_action_token(tampered, job_id=job_id, action="retry")
     assert "signature" in str(exc_info.value)

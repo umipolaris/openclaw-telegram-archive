@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -7,7 +7,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser, get_current_user, require_roles
-from app.core.security import hash_password, verify_password
+from app.core.config import get_settings
+from app.core.security import hash_password, validate_password_strength, verify_password
 from app.db.models import (
     AuditLog,
     Category,
@@ -21,28 +22,79 @@ from app.db.models import (
     RuleVersion,
     Ruleset,
     SavedFilter,
+    SecurityPolicy,
     Tag,
     User,
     UserRole,
 )
 from app.db.session import get_db
 from app.schemas.auth import (
+    AuthSecurityPolicy,
     AuthUser,
+    ChangePasswordRequest,
+    ChangePasswordResponse,
     CreateUserRequest,
     DeleteUserResponse,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
+    UpdateAuthSecurityPolicyRequest,
     UpdateUserRequest,
     UserSummary,
     UsersListResponse,
 )
 
 router = APIRouter()
+settings = get_settings()
 
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+def _to_auth_policy_response(row: SecurityPolicy) -> AuthSecurityPolicy:
+    return AuthSecurityPolicy(
+        scope=row.scope,
+        password_min_length=row.password_min_length,
+        require_uppercase=row.require_uppercase,
+        require_lowercase=row.require_lowercase,
+        require_digit=row.require_digit,
+        require_special=row.require_special,
+        max_failed_attempts=row.max_failed_attempts,
+        lockout_seconds=row.lockout_seconds,
+        updated_at=row.updated_at,
+    )
+
+
+def _get_auth_policy(db: Session) -> AuthSecurityPolicy:
+    row = db.get(SecurityPolicy, "auth")
+    if row:
+        return _to_auth_policy_response(row)
+    return AuthSecurityPolicy(
+        scope="auth",
+        password_min_length=settings.password_min_length,
+        require_uppercase=True,
+        require_lowercase=True,
+        require_digit=True,
+        require_special=True,
+        max_failed_attempts=settings.auth_max_failed_attempts,
+        lockout_seconds=settings.auth_lockout_seconds,
+        updated_at=None,
+    )
+
+
+def _ensure_password_strength(password: str, db: Session) -> None:
+    policy = _get_auth_policy(db)
+    errors = validate_password_strength(
+        password,
+        min_length=policy.password_min_length,
+        require_uppercase=policy.require_uppercase,
+        require_lowercase=policy.require_lowercase,
+        require_digit=policy.require_digit,
+        require_special=policy.require_special,
+    )
+    if errors:
+        raise HTTPException(status_code=400, detail={"code": "WEAK_PASSWORD", "reasons": errors})
 
 
 def _count_active_admins(db: Session) -> int:
@@ -70,6 +122,7 @@ def _nullify_user_refs(db: Session, user_id: UUID) -> dict[str, int]:
         ("audit_logs.created_by", AuditLog, AuditLog.created_by),
         ("audit_logs.actor_user_id", AuditLog, AuditLog.actor_user_id),
         ("saved_filters.created_by", SavedFilter, SavedFilter.created_by),
+        ("security_policies.created_by", SecurityPolicy, SecurityPolicy.created_by),
     ]
 
     result: dict[str, int] = {}
@@ -87,13 +140,39 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)) ->
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
 
+    policy = _get_auth_policy(db)
+    now = _now()
+    if user.locked_until and user.locked_until > now:
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="account temporarily locked")
+
     if not verify_password(req.password, user.password_hash):
+        user.failed_login_attempts = int(user.failed_login_attempts or 0) + 1
+        locked_until: datetime | None = None
+        if user.failed_login_attempts >= policy.max_failed_attempts:
+            locked_until = now + timedelta(seconds=policy.lockout_seconds)
+            user.locked_until = locked_until
+
+        db.add(user)
+        db.add(
+            AuditLog(
+                actor_user_id=None,
+                action="AUTH_LOGIN_FAILED",
+                target_type="user",
+                target_id=user.id,
+                after_json={
+                    "username": user.username,
+                    "failed_login_attempts": user.failed_login_attempts,
+                    "locked_until": locked_until.isoformat() if locked_until else None,
+                },
+            )
+        )
+        db.commit()
+        if locked_until:
+            raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="account temporarily locked")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
 
-    request.session["user_id"] = str(user.id)
-    request.session["username"] = user.username
-    request.session["role"] = user.role.value
-
+    user.failed_login_attempts = 0
+    user.locked_until = None
     user.last_login_at = _now()
     db.add(user)
     db.add(
@@ -106,6 +185,10 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)) ->
         )
     )
     db.commit()
+
+    request.session["user_id"] = str(user.id)
+    request.session["username"] = user.username
+    request.session["role"] = user.role.value
 
     return LoginResponse(
         user=AuthUser(id=str(user.id), username=user.username, role=user.role),
@@ -137,6 +220,68 @@ def logout(
 @router.get("/auth/me", response_model=AuthUser)
 def me(current_user: CurrentUser = Depends(get_current_user)) -> AuthUser:
     return AuthUser(id=str(current_user.id), username=current_user.username, role=current_user.role)
+
+
+@router.get(
+    "/admin/security-policy",
+    response_model=AuthSecurityPolicy,
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+)
+def get_security_policy(db: Session = Depends(get_db)) -> AuthSecurityPolicy:
+    return _get_auth_policy(db)
+
+
+@router.patch(
+    "/admin/security-policy",
+    response_model=AuthSecurityPolicy,
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+)
+def update_security_policy(
+    req: UpdateAuthSecurityPolicyRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AuthSecurityPolicy:
+    before = _get_auth_policy(db).model_dump(mode="json")
+    row = db.get(SecurityPolicy, "auth")
+    if row is None:
+        row = SecurityPolicy(
+            scope="auth",
+            password_min_length=settings.password_min_length,
+            require_uppercase=True,
+            require_lowercase=True,
+            require_digit=True,
+            require_special=True,
+            max_failed_attempts=settings.auth_max_failed_attempts,
+            lockout_seconds=settings.auth_lockout_seconds,
+            created_by=current_user.id,
+        )
+
+    row.password_min_length = req.password_min_length
+    row.require_uppercase = req.require_uppercase
+    row.require_lowercase = req.require_lowercase
+    row.require_digit = req.require_digit
+    row.require_special = req.require_special
+    row.max_failed_attempts = req.max_failed_attempts
+    row.lockout_seconds = req.lockout_seconds
+    row.updated_at = _now()
+
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    after = _to_auth_policy_response(row).model_dump(mode="json")
+    db.add(
+        AuditLog(
+            actor_user_id=current_user.id,
+            action="AUTH_POLICY_UPDATE",
+            target_type="security_policy",
+            after_json=after,
+            before_json=before,
+        )
+    )
+    db.commit()
+
+    return _to_auth_policy_response(row)
 
 
 @router.get(
@@ -180,6 +325,8 @@ def list_users(
                 username=u.username,
                 role=u.role,
                 is_active=u.is_active,
+                failed_login_attempts=u.failed_login_attempts,
+                locked_until=u.locked_until,
                 created_at=u.created_at,
                 last_login_at=u.last_login_at,
             )
@@ -206,11 +353,18 @@ def create_user(
     if existing:
         raise HTTPException(status_code=409, detail="username already exists")
 
+    if req.password != req.password_confirm:
+        raise HTTPException(status_code=400, detail="password confirmation does not match")
+
+    _ensure_password_strength(req.password, db)
+
     user = User(
         username=req.username,
         password_hash=hash_password(req.password),
         role=req.role,
         is_active=True,
+        failed_login_attempts=0,
+        password_changed_at=_now(),
         created_by=current_user.id,
     )
     db.add(user)
@@ -233,6 +387,8 @@ def create_user(
         username=user.username,
         role=user.role,
         is_active=user.is_active,
+        failed_login_attempts=user.failed_login_attempts,
+        locked_until=user.locked_until,
         created_at=user.created_at,
         last_login_at=user.last_login_at,
     )
@@ -253,7 +409,10 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="user not found")
 
-    if req.role is None and req.is_active is None and req.password is None:
+    if req.password is None and req.password_confirm is not None:
+        raise HTTPException(status_code=400, detail="password confirmation requires password")
+
+    if req.role is None and req.is_active is None and req.password is None and not req.unlock_account:
         raise HTTPException(status_code=400, detail="nothing to update")
 
     if req.is_active is False and str(user.id) == str(current_user.id):
@@ -262,6 +421,8 @@ def update_user(
     before = {
         "role": user.role.value,
         "is_active": user.is_active,
+        "failed_login_attempts": user.failed_login_attempts,
+        "locked_until": user.locked_until.isoformat() if user.locked_until else None,
     }
     masked_fields: list[str] = []
 
@@ -270,8 +431,17 @@ def update_user(
     if req.is_active is not None:
         user.is_active = req.is_active
     if req.password is not None:
+        if req.password_confirm is None:
+            raise HTTPException(status_code=400, detail="password confirmation is required")
+        if req.password != req.password_confirm:
+            raise HTTPException(status_code=400, detail="password confirmation does not match")
+        _ensure_password_strength(req.password, db)
         user.password_hash = hash_password(req.password)
+        user.password_changed_at = _now()
         masked_fields.append("password")
+    if req.unlock_account:
+        user.failed_login_attempts = 0
+        user.locked_until = None
 
     db.add(user)
     db.commit()
@@ -288,6 +458,9 @@ def update_user(
                 "role": user.role.value,
                 "is_active": user.is_active,
                 "password_updated": req.password is not None,
+                "failed_login_attempts": user.failed_login_attempts,
+                "locked_until": user.locked_until.isoformat() if user.locked_until else None,
+                "unlock_account": bool(req.unlock_account),
             },
             masked_fields=masked_fields,
         )
@@ -299,9 +472,53 @@ def update_user(
         username=user.username,
         role=user.role,
         is_active=user.is_active,
+        failed_login_attempts=user.failed_login_attempts,
+        locked_until=user.locked_until,
         created_at=user.created_at,
         last_login_at=user.last_login_at,
     )
+
+
+@router.post("/auth/change-password", response_model=ChangePasswordResponse)
+def change_password(
+    req: ChangePasswordRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ChangePasswordResponse:
+    if req.new_password != req.confirm_new_password:
+        raise HTTPException(status_code=400, detail="password confirmation does not match")
+
+    user = db.get(User, current_user.id)
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="invalid session")
+
+    if not verify_password(req.current_password, user.password_hash):
+        raise HTTPException(status_code=401, detail="current password is invalid")
+
+    if verify_password(req.new_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="new password must be different from current password")
+
+    _ensure_password_strength(req.new_password, db)
+
+    changed_at = _now()
+    user.password_hash = hash_password(req.new_password)
+    user.password_changed_at = changed_at
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    db.add(user)
+    db.add(
+        AuditLog(
+            actor_user_id=current_user.id,
+            action="AUTH_CHANGE_PASSWORD",
+            target_type="user",
+            target_id=current_user.id,
+            after_json={"username": current_user.username},
+            masked_fields=["password"],
+        )
+    )
+    db.commit()
+
+    return ChangePasswordResponse(status="ok", changed_at=changed_at)
 
 
 @router.delete(

@@ -55,6 +55,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/security-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Security Policy */
+        get: operations["get_security_policy_api_admin_security_policy_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Security Policy */
+        patch: operations["update_security_policy_api_admin_security_policy_patch"];
+        trace?: never;
+    };
     "/api/admin/users": {
         parameters: {
             query?: never;
@@ -89,6 +107,23 @@ export interface paths {
         head?: never;
         /** Update User */
         patch: operations["update_user_api_admin_users__user_id__patch"];
+        trace?: never;
+    };
+    "/api/auth/change-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change Password */
+        post: operations["change_password_api_auth_change_password_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/ingest/telegram": {
@@ -1112,6 +1147,51 @@ export interface components {
             /** Total */
             total: number;
         };
+        /** AuthSecurityPolicy */
+        AuthSecurityPolicy: {
+            /**
+             * Scope
+             * @default auth
+             */
+            scope: string;
+            /**
+             * Password Min Length
+             * @default 10
+             */
+            password_min_length: number;
+            /**
+             * Require Uppercase
+             * @default true
+             */
+            require_uppercase: boolean;
+            /**
+             * Require Lowercase
+             * @default true
+             */
+            require_lowercase: boolean;
+            /**
+             * Require Digit
+             * @default true
+             */
+            require_digit: boolean;
+            /**
+             * Require Special
+             * @default true
+             */
+            require_special: boolean;
+            /**
+             * Max Failed Attempts
+             * @default 5
+             */
+            max_failed_attempts: number;
+            /**
+             * Lockout Seconds
+             * @default 900
+             */
+            lockout_seconds: number;
+            /** Updated At */
+            updated_at?: string | null;
+        };
         /** AuthUser */
         AuthUser: {
             /** Id */
@@ -1256,12 +1336,36 @@ export interface components {
              */
             change_reason: string;
         };
+        /** ChangePasswordRequest */
+        ChangePasswordRequest: {
+            /** Current Password */
+            current_password: string;
+            /** New Password */
+            new_password: string;
+            /** Confirm New Password */
+            confirm_new_password: string;
+        };
+        /** ChangePasswordResponse */
+        ChangePasswordResponse: {
+            /**
+             * Status
+             * @default ok
+             */
+            status: string;
+            /**
+             * Changed At
+             * Format: date-time
+             */
+            changed_at: string;
+        };
         /** CreateUserRequest */
         CreateUserRequest: {
             /** Username */
             username: string;
             /** Password */
             password: string;
+            /** Password Confirm */
+            password_confirm: string;
             /** @default VIEWER */
             role: components["schemas"]["UserRole"];
         };
@@ -2504,6 +2608,35 @@ export interface components {
             /** Buckets */
             buckets: components["schemas"]["TimelineBucket"][];
         };
+        /** UpdateAuthSecurityPolicyRequest */
+        UpdateAuthSecurityPolicyRequest: {
+            /** Password Min Length */
+            password_min_length: number;
+            /**
+             * Require Uppercase
+             * @default true
+             */
+            require_uppercase: boolean;
+            /**
+             * Require Lowercase
+             * @default true
+             */
+            require_lowercase: boolean;
+            /**
+             * Require Digit
+             * @default true
+             */
+            require_digit: boolean;
+            /**
+             * Require Special
+             * @default true
+             */
+            require_special: boolean;
+            /** Max Failed Attempts */
+            max_failed_attempts: number;
+            /** Lockout Seconds */
+            lockout_seconds: number;
+        };
         /** UpdateUserRequest */
         UpdateUserRequest: {
             role?: components["schemas"]["UserRole"] | null;
@@ -2511,6 +2644,10 @@ export interface components {
             is_active?: boolean | null;
             /** Password */
             password?: string | null;
+            /** Password Confirm */
+            password_confirm?: string | null;
+            /** Unlock Account */
+            unlock_account?: boolean | null;
         };
         /**
          * UserRole
@@ -2526,6 +2663,13 @@ export interface components {
             role: components["schemas"]["UserRole"];
             /** Is Active */
             is_active: boolean;
+            /**
+             * Failed Login Attempts
+             * @default 0
+             */
+            failed_login_attempts: number;
+            /** Locked Until */
+            locked_until?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -2645,6 +2789,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuthUser"];
+                };
+            };
+        };
+    };
+    get_security_policy_api_admin_security_policy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthSecurityPolicy"];
+                };
+            };
+        };
+    };
+    update_security_policy_api_admin_security_policy_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAuthSecurityPolicyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthSecurityPolicy"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -2770,6 +2967,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    change_password_api_auth_change_password_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChangePasswordResponse"];
                 };
             };
             /** @description Validation Error */

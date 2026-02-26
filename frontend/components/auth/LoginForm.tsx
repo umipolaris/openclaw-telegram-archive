@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { apiGet } from "@/lib/api-client";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "/api";
 
 type AuthUser = {
   id: string;
@@ -54,8 +54,17 @@ export function LoginForm() {
       });
 
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`로그인 실패 (${res.status}) ${text}`);
+        let detail = "";
+        try {
+          const body = (await res.json()) as { detail?: unknown };
+          detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? "");
+        } catch {
+          detail = await res.text();
+        }
+        if (res.status === 423) {
+          throw new Error("계정이 일시 잠금되었습니다. 잠시 후 다시 시도하세요.");
+        }
+        throw new Error(`로그인 실패 (${res.status}) ${detail}`);
       }
 
       window.location.assign(nextPath);

@@ -24,8 +24,8 @@ app.add_middleware(
     secret_key=settings.session_secret,
     session_cookie=settings.session_cookie_name,
     max_age=settings.session_max_age_seconds,
-    same_site="lax",
-    https_only=False,
+    same_site=settings.session_same_site,
+    https_only=settings.session_https_only,
 )
 app.add_middleware(
     CORSMiddleware,

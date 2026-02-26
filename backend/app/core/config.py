@@ -31,7 +31,13 @@ class Settings(BaseSettings):
     session_secret: str = "change-me"
     session_cookie_name: str = "archive_session"
     session_max_age_seconds: int = 60 * 60 * 8
+    session_https_only: bool = False
+    session_same_site: str = "lax"
     read_only_mode: bool = False
+
+    password_min_length: int = 10
+    auth_max_failed_attempts: int = 5
+    auth_lockout_seconds: int = 900
 
     openclaw_callback_url: str = "http://openclaw:8080/callback/ingest"
     openclaw_notify_enabled: bool = False

@@ -156,6 +156,17 @@ type DetailTab = "meta" | "files" | "versions" | "history";
 type DocumentHistoryResponse = ApiDocumentHistoryResponse;
 type DocumentHistoryItem = DocumentHistoryResponse["items"][number];
 
+type ManualPostCategoryOptionsResponse = {
+  categories: string[];
+};
+
+type ReviewQueueApproveResponse = {
+  document_id: string;
+  updated: boolean;
+  review_status: ReviewStatus;
+  review_reasons: string[];
+};
+
 const DEFAULT_PAGE_SIZE = 50;
 const NEW_POST_WINDOW_MS = 4 * 60 * 60 * 1000;
 
@@ -315,6 +326,10 @@ export function ArchiveWorkspace() {
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editCategoryName, setEditCategoryName] = useState("");
+  const [isCustomCategory, setIsCustomCategory] = useState(false);
+  const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
+  const [categoryOptionsLoading, setCategoryOptionsLoading] = useState(true);
+  const [categoryOptionsError, setCategoryOptionsError] = useState("");
   const [editEventDate, setEditEventDate] = useState("");
   const [editTags, setEditTags] = useState("");
   const [editReviewStatus, setEditReviewStatus] = useState<ReviewStatus>("NONE");
@@ -341,6 +356,7 @@ export function ArchiveWorkspace() {
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [pageSize, total]);
   const isAdmin = userRole === "ADMIN";
+  const canQuickResolveReview = userRole === "ADMIN" || userRole === "REVIEWER";
   const allSelectedOnPage = items.length > 0 && items.every((item) => bulkSelectedDocIds.includes(item.id));
   const tableGridTemplate = useMemo(() => {
     const widths = visibleColumns.map((column) => ARCHIVE_COLUMN_WIDTHS[column]);
@@ -391,6 +407,30 @@ export function ArchiveWorkspace() {
   useEffect(() => {
     let cancelled = false;
 
+    async function loadCategoryOptions() {
+      setCategoryOptionsLoading(true);
+      setCategoryOptionsError("");
+      try {
+        const res = await apiGet<ManualPostCategoryOptionsResponse>("/documents/manual-post/category-options");
+        if (cancelled) return;
+        const names = Array.from(
+          new Set(
+            (res.categories ?? [])
+              .map((name) => name?.trim())
+              .filter((name): name is string => Boolean(name)),
+          ),
+        );
+        setCategoryOptions(names);
+      } catch (err) {
+        if (!cancelled) {
+          setCategoryOptionsError(err instanceof Error ? err.message : "카테고리 목록 로드 실패");
+          setCategoryOptions([]);
+        }
+      } finally {
+        if (!cancelled) setCategoryOptionsLoading(false);
+      }
+    }
+
     async function loadCurrentUserRole() {
       try {
         const user = await getCurrentUser();
@@ -404,6 +444,7 @@ export function ArchiveWorkspace() {
       }
     }
 
+    void loadCategoryOptions();
     void loadCurrentUserRole();
     return () => {
       cancelled = true;
@@ -639,6 +680,7 @@ export function ArchiveWorkspace() {
       setEditTitle("");
       setEditDescription("");
       setEditCategoryName("");
+      setIsCustomCategory(false);
       setEditEventDate("");
       setEditTags("");
       setEditReviewStatus("NONE");
@@ -649,7 +691,9 @@ export function ArchiveWorkspace() {
     }
     setEditTitle(detail.title);
     setEditDescription(detail.description);
-    setEditCategoryName(detail.category ?? "");
+    const initialCategory = detail.category ?? "";
+    setEditCategoryName(initialCategory);
+    setIsCustomCategory(Boolean(initialCategory));
     setEditEventDate(detail.event_date ?? "");
     setEditTags(detail.tags.join(", "));
     setEditReviewStatus(detail.review_status);
@@ -657,6 +701,16 @@ export function ArchiveWorkspace() {
     setVersionSnapshotError("");
     setSelectedVersionNo(null);
   }, [detail]);
+
+  useEffect(() => {
+    if (!editCategoryName.trim()) {
+      setIsCustomCategory(false);
+      return;
+    }
+    if (categoryOptions.includes(editCategoryName)) {
+      setIsCustomCategory(false);
+    }
+  }, [categoryOptions, editCategoryName]);
 
   const deleteDetailFile = async (fileId: string) => {
     if (!detail) return;
@@ -736,6 +790,26 @@ export function ArchiveWorkspace() {
       setRefreshTick((prev) => prev + 1);
     } catch (err) {
       setDetailError(err instanceof Error ? err.message : "게시물 수정 실패");
+    } finally {
+      setDocActionLoading(false);
+    }
+  };
+
+  const quickResolveDetailReview = async () => {
+    if (!detail) return;
+
+    setDocActionLoading(true);
+    setDetailError("");
+    setDetailNotice("");
+    try {
+      await apiPatch<ReviewQueueApproveResponse>(`/review-queue/${detail.id}`, { approve: true });
+      const refreshed = await apiGet<DocumentDetailResponse>(`/documents/${detail.id}`);
+      setDetail(refreshed);
+      setEditReviewStatus("RESOLVED");
+      setDetailNotice("검토 완료 처리되었습니다.");
+      setRefreshTick((prev) => prev + 1);
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : "검토 완료 처리 실패");
     } finally {
       setDocActionLoading(false);
     }
@@ -1577,6 +1651,19 @@ export function ArchiveWorkspace() {
               </div>
               <div className="flex items-center gap-1">
                 <button
+                  className="rounded border border-cyan-600 bg-cyan-600 px-2 py-1 text-xs text-white hover:bg-cyan-700 disabled:opacity-50"
+                  onClick={() => void quickResolveDetailReview()}
+                  disabled={
+                    docActionLoading ||
+                    Boolean(fileActionLoadingId) ||
+                    !canQuickResolveReview ||
+                    (detail.review_status === "RESOLVED" && detail.review_reasons.length === 0)
+                  }
+                  title={!canQuickResolveReview ? "REVIEWER/ADMIN 권한에서만 사용 가능" : "검토 사유를 정리하고 완료 처리"}
+                >
+                  {docActionLoading ? "처리 중..." : "검토 완료"}
+                </button>
+                <button
                   className="rounded border border-emerald-600 bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-50"
                   onClick={() => void saveDetailDocument()}
                   disabled={docActionLoading || Boolean(fileActionLoadingId)}
@@ -1628,12 +1715,37 @@ export function ArchiveWorkspace() {
                       onChange={(e) => setEditDescription(e.target.value)}
                       placeholder="설명"
                     />
-                    <input
+                    <select
                       className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
-                      value={editCategoryName}
-                      onChange={(e) => setEditCategoryName(e.target.value)}
-                      placeholder="카테고리명"
-                    />
+                      value={isCustomCategory ? "__custom__" : editCategoryName}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (value === "__custom__") {
+                          setIsCustomCategory(true);
+                          return;
+                        }
+                        setIsCustomCategory(false);
+                        setEditCategoryName(value);
+                      }}
+                    >
+                      <option value="">카테고리 선택</option>
+                      {categoryOptions.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                      <option value="__custom__">직접 입력</option>
+                    </select>
+                    {isCustomCategory ? (
+                      <input
+                        className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
+                        value={editCategoryName}
+                        onChange={(e) => setEditCategoryName(e.target.value)}
+                        placeholder="신규 카테고리명"
+                      />
+                    ) : null}
+                    {categoryOptionsLoading ? <p className="text-[11px] text-stone-500">카테고리 목록 로딩 중...</p> : null}
+                    {categoryOptionsError ? <p className="text-[11px] text-amber-700">목록 로드 실패: {categoryOptionsError}</p> : null}
                     <input
                       className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
                       type="date"
