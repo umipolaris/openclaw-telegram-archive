@@ -78,6 +78,36 @@
 | Observability | structlog(JSON), prometheus-client, Prometheus |
 | Infra/CI | Docker Compose, GitHub Actions |
 
+## 관리자/권한 표
+이 시스템은 `ADMIN` 계정을 여러 개 둘 수 있습니다.  
+각 관리자의 수행 작업은 감사 로그에 `actor_user_id`/`actor_username`으로 남습니다.
+
+### 역할별 권한 매트릭스
+| 역할 | 문서 조회 | 문서 편집/삭제 | 검토 큐 처리 | Rules 변경/백필 | Admin 메뉴 |
+| --- | --- | --- | --- | --- | --- |
+| `VIEWER` | O | X | X | X | X |
+| `REVIEWER` | O | X | O | 조회/시뮬레이션만 O | X |
+| `EDITOR` | O | O | O | X | X |
+| `ADMIN` | O | O | O | O | O |
+
+### 관리자 기능(복수 관리자 공통)
+| 기능 | 설명 | UI 위치 | 주요 API |
+| --- | --- | --- | --- |
+| 사용자 관리 | 사용자 생성/권한변경/활성화/비밀번호 재설정 | `Admin > 사용자 관리` | `GET/POST/PATCH /api/admin/users` |
+| 감사 로그 조회 | 누가/언제/무엇 변경했는지 조회 | `Admin > 운영/감사 로그` | `GET /api/admin/audit-logs` |
+| 감사 로그 내보내기 | csv/json 포맷 export | `Admin > 운영/감사 로그` | `GET /api/admin/audit-logs/export` |
+| ingest 작업 추적 | 실패/재시도 대상 작업 및 이벤트 조회 | `Admin > 운영/감사 로그` | `GET /api/admin/ingest-jobs`, `GET /api/admin/ingest-jobs/{job_id}/events` |
+| ingest 수동 재처리 | 재큐잉/파일 복구 업로드 | `Admin > 운영/감사 로그` | `POST /api/admin/ingest-jobs/{job_id}/requeue`, `POST /api/admin/ingest-jobs/{job_id}/recover-upload` |
+| 운영 리포트 | 주간 운영지표 생성/조회 | `Admin > 운영/감사 로그` | `POST /api/admin/ops-reports/generate`, `GET /api/admin/ops-reports` |
+
+### 추가 관리자 계정 생성 예시
+```bash
+curl -X POST http://localhost:8000/api/admin/users \
+  -b /tmp/archive.cookie \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin_ops_01","password":"TempPass123!","role":"ADMIN"}'
+```
+
 ## 실행 전 요구사항
 - Docker Engine 또는 Docker Desktop (daemon 실행 상태)
 - Docker Compose (`docker compose` 또는 `docker-compose`)
