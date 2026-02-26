@@ -25,3 +25,7 @@ backend/*.egg-info/
 backend/celerybeat-schedule
 backend/integrity_report*.txt
 docs/screenshots/storage.json
+docs/screenshots/*.png
+*.cookie
+*.session
+*.har

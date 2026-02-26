@@ -1,0 +1,16 @@
+name: Privacy Guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  privacy-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run sensitive data guard
+        run: |
+          chmod +x scripts/check_sensitive_guard.sh
+          scripts/check_sensitive_guard.sh --all

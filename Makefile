@@ -4,7 +4,7 @@ APP_PROFILE ?= dev
 ADMIN_USER ?= admin
 ADMIN_PASS ?= ChangeMe123!
 
-.PHONY: doctor up down restart ps logs health wait-api first-run bootstrap-admin
+.PHONY: doctor up down restart ps logs health wait-api first-run bootstrap-admin install-hooks guard-staged guard-all
 
 doctor:
 	@./infra/scripts/doctor.sh
@@ -44,3 +44,14 @@ first-run: doctor up wait-api
 
 bootstrap-admin:
 	@cd infra && APP_PROFILE=$(APP_PROFILE) ./scripts/compose.sh exec -T api sh -lc "cd /app && python scripts/bootstrap_admin.py --username '$(ADMIN_USER)' --password '$(ADMIN_PASS)'"
+
+install-hooks:
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/pre-commit .githooks/pre-push scripts/check_sensitive_guard.sh
+	@echo "git hooks installed (.githooks)"
+
+guard-staged:
+	@./scripts/check_sensitive_guard.sh --staged
+
+guard-all:
+	@./scripts/check_sensitive_guard.sh --all

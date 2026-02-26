@@ -40,17 +40,20 @@
 - 프로덕션 배포 전에는 비밀번호/비밀키/도메인 값을 반드시 교체해야 함
 
 ## 스크린샷
-![로그인 화면](docs/screenshots/login.png)
-![아카이브 화면](docs/screenshots/archive.png)
-![타임라인 화면](docs/screenshots/timeline.png)
-![규칙 관리 화면](docs/screenshots/rules.png)
-![마인드맵 화면](docs/screenshots/mind-map.png)
-![검색 화면](docs/screenshots/search.png)
+개인정보 보호를 위해 스크린샷 PNG는 기본적으로 저장소에 커밋하지 않습니다.
 
-스크린샷 갱신:
+스크린샷 생성(로컬 전용):
 ```bash
 ./scripts/capture_screenshots.sh
 ```
+
+생성 위치:
+- `docs/screenshots/login.png`
+- `docs/screenshots/archive.png`
+- `docs/screenshots/timeline.png`
+- `docs/screenshots/search.png`
+- `docs/screenshots/rules.png`
+- `docs/screenshots/mind-map.png`
 
 ## 시스템 요구사항
 | 구분 | 최소 | 권장 |
@@ -77,6 +80,18 @@
 | Frontend | Next.js 14, TypeScript, Tailwind CSS, shadcn/ui 기반 컴포넌트 |
 | Observability | structlog(JSON), prometheus-client, Prometheus |
 | Infra/CI | Docker Compose, GitHub Actions |
+
+## 개인정보 업로드 차단 가드
+- 로컬 훅: `.githooks/pre-commit`, `.githooks/pre-push`
+- 검사 스크립트: `scripts/check_sensitive_guard.sh`
+- CI 검사: `.github/workflows/privacy-guard.yml`
+
+설치/실행:
+```bash
+git config core.hooksPath .githooks
+scripts/check_sensitive_guard.sh --staged
+scripts/check_sensitive_guard.sh --all
+```
 
 ## 관리자/권한 표
 이 시스템은 `ADMIN` 계정을 여러 개 둘 수 있습니다.  
