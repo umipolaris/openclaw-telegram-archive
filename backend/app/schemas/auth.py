@@ -51,3 +51,10 @@ class UpdateUserRequest(BaseModel):
     role: UserRole | None = None
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=8)
+
+
+class DeleteUserResponse(BaseModel):
+    id: str
+    username: str
+    deleted: bool = True
+    nullified_refs: dict[str, int] = Field(default_factory=dict)

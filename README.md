@@ -365,6 +365,10 @@ curl -X PATCH http://localhost:8000/api/admin/users/<USER_ID> \
   -H 'Content-Type: application/json' \
   -d '{"password":"TempPass123!"}'
 
+# 8-1) 사용자 계정 삭제
+curl -X DELETE http://localhost:8000/api/admin/users/<USER_ID> \
+  -b /tmp/archive.cookie
+
 # 9) 저장 필터 생성/조회/삭제
 curl -X POST http://localhost:8000/api/saved-filters \
   -b /tmp/archive.cookie \

@@ -23,10 +23,23 @@ type UsersListResponse = {
   total: number;
 };
 
+type AuthMe = {
+  id: string;
+  username: string;
+  role: UserRole;
+};
+
 type UpdateUserRequest = {
   role?: UserRole;
   is_active?: boolean;
   password?: string;
+};
+
+type DeleteUserResponse = {
+  id: string;
+  username: string;
+  deleted: boolean;
+  nullified_refs: Record<string, number>;
 };
 
 const ROLE_OPTIONS: UserRole[] = ["ADMIN", "EDITOR", "REVIEWER", "VIEWER"];
@@ -39,6 +52,7 @@ function formatDateTime(value: string | null): string {
 }
 
 export function AdminUserManager() {
+  const [currentUserId, setCurrentUserId] = useState("");
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [roleDrafts, setRoleDrafts] = useState<Record<string, UserRole>>({});
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
@@ -84,6 +98,22 @@ export function AdminUserManager() {
   useEffect(() => {
     void loadUsers();
   }, [loadUsers]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadMe() {
+      try {
+        const me = await apiGet<AuthMe>("/auth/me");
+        if (!cancelled) setCurrentUserId(me.id);
+      } catch {
+        if (!cancelled) setCurrentUserId("");
+      }
+    }
+    void loadMe();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -141,6 +171,29 @@ export function AdminUserManager() {
       setError(err instanceof Error ? err.message : "사용자 생성 실패");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const deleteUser = async (user: UserSummary) => {
+    if (user.id === currentUserId) {
+      setError("현재 로그인한 관리자 계정은 삭제할 수 없습니다.");
+      return;
+    }
+
+    const ok = window.confirm(`사용자 '${user.username}' 계정을 삭제하시겠습니까?`);
+    if (!ok) return;
+
+    setBusyUserId(user.id);
+    setError("");
+    setMessage("");
+    try {
+      await apiFetch<DeleteUserResponse>(`/admin/users/${user.id}`, { method: "DELETE" });
+      setMessage(`사용자 삭제 완료: ${user.username}`);
+      await loadUsers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "사용자 삭제 실패");
+    } finally {
+      setBusyUserId(null);
     }
   };
 
@@ -354,6 +407,14 @@ export function AdminUserManager() {
                           onClick={() => void resetPassword(user)}
                         >
                           비밀번호 재설정
+                        </button>
+                        <button
+                          className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
+                          disabled={busyUserId === user.id || user.id === currentUserId}
+                          onClick={() => void deleteUser(user)}
+                          title={user.id === currentUserId ? "현재 로그인 사용자 삭제 불가" : "사용자 삭제"}
+                        >
+                          계정 삭제
                         </button>
                       </div>
                     </td>

@@ -2,16 +2,34 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser, get_current_user, require_roles
 from app.core.security import hash_password, verify_password
-from app.db.models import AuditLog, User, UserRole
+from app.db.models import (
+    AuditLog,
+    Category,
+    Document,
+    DocumentFile,
+    DocumentTag,
+    DocumentVersion,
+    File,
+    IngestEvent,
+    IngestJob,
+    RuleVersion,
+    Ruleset,
+    SavedFilter,
+    Tag,
+    User,
+    UserRole,
+)
 from app.db.session import get_db
 from app.schemas.auth import (
     AuthUser,
     CreateUserRequest,
+    DeleteUserResponse,
     LoginRequest,
     LoginResponse,
     LogoutResponse,
@@ -25,6 +43,42 @@ router = APIRouter()
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
+
+
+def _count_active_admins(db: Session) -> int:
+    return int(
+        db.execute(
+            select(func.count(User.id)).where(User.role == UserRole.ADMIN, User.is_active.is_(True))
+        ).scalar_one()
+    )
+
+
+def _nullify_user_refs(db: Session, user_id: UUID) -> dict[str, int]:
+    updates = [
+        ("users.created_by", User, User.created_by),
+        ("categories.created_by", Category, Category.created_by),
+        ("tags.created_by", Tag, Tag.created_by),
+        ("rulesets.created_by", Ruleset, Ruleset.created_by),
+        ("rule_versions.created_by", RuleVersion, RuleVersion.created_by),
+        ("files.created_by", File, File.created_by),
+        ("documents.created_by", Document, Document.created_by),
+        ("document_versions.created_by", DocumentVersion, DocumentVersion.created_by),
+        ("document_files.created_by", DocumentFile, DocumentFile.created_by),
+        ("document_tags.created_by", DocumentTag, DocumentTag.created_by),
+        ("ingest_jobs.created_by", IngestJob, IngestJob.created_by),
+        ("ingest_events.created_by", IngestEvent, IngestEvent.created_by),
+        ("audit_logs.created_by", AuditLog, AuditLog.created_by),
+        ("audit_logs.actor_user_id", AuditLog, AuditLog.actor_user_id),
+        ("saved_filters.created_by", SavedFilter, SavedFilter.created_by),
+    ]
+
+    result: dict[str, int] = {}
+    for label, model, column in updates:
+        stmt = update(model).where(column == user_id).values({column.key: None})
+        affected = int(db.execute(stmt).rowcount or 0)
+        if affected > 0:
+            result[label] = affected
+    return result
 
 
 @router.post("/auth/login", response_model=LoginResponse)
@@ -247,4 +301,60 @@ def update_user(
         is_active=user.is_active,
         created_at=user.created_at,
         last_login_at=user.last_login_at,
+    )
+
+
+@router.delete(
+    "/admin/users/{user_id}",
+    response_model=DeleteUserResponse,
+    dependencies=[Depends(require_roles(UserRole.ADMIN))],
+)
+def delete_user(
+    user_id: UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DeleteUserResponse:
+    user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    if str(user.id) == str(current_user.id):
+        raise HTTPException(status_code=400, detail="cannot delete current user")
+
+    if user.role == UserRole.ADMIN and user.is_active and _count_active_admins(db) <= 1:
+        raise HTTPException(status_code=400, detail="cannot delete last active admin")
+
+    before = {
+        "username": user.username,
+        "role": user.role.value,
+        "is_active": user.is_active,
+        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+    }
+
+    nullified_refs = _nullify_user_refs(db, user.id)
+
+    try:
+        db.delete(user)
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="cannot delete user due to relational constraints") from exc
+
+    db.add(
+        AuditLog(
+            actor_user_id=current_user.id,
+            action="USER_DELETE",
+            target_type="user",
+            target_id=user_id,
+            before_json={**before, "nullified_refs": nullified_refs},
+            after_json={"deleted": True},
+        )
+    )
+    db.commit()
+
+    return DeleteUserResponse(
+        id=str(user_id),
+        username=before["username"],
+        deleted=True,
+        nullified_refs=nullified_refs,
     )

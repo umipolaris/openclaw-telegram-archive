@@ -83,7 +83,8 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete User */
+        delete: operations["delete_user_api_admin_users__user_id__delete"];
         options?: never;
         head?: never;
         /** Update User */
@@ -1323,6 +1324,22 @@ export interface components {
              * Format: date-time
              */
             generated_at: string;
+        };
+        /** DeleteUserResponse */
+        DeleteUserResponse: {
+            /** Id */
+            id: string;
+            /** Username */
+            username: string;
+            /**
+             * Deleted
+             * @default true
+             */
+            deleted: boolean;
+            /** Nullified Refs */
+            nullified_refs?: {
+                [key: string]: number;
+            };
         };
         /** DocumentDeleteResponse */
         DocumentDeleteResponse: {
@@ -2687,6 +2704,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_user_api_admin_users__user_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteUserResponse"];
                 };
             };
             /** @description Validation Error */
