@@ -36,8 +36,8 @@ from app.services.error_codes import (
 from app.services.openclaw_actions import build_result_actions
 from app.services.rule_engine import RuleInput, apply_rules
 from app.services.search_sync_service import enqueue_document_index_sync
-from app.services.storage_disk import put_file as put_file_disk
-from app.services.storage_minio import ensure_bucket, get_minio_client, put_file as put_file_minio
+from app.services.storage_disk import put_file_from_path as put_file_disk_from_path
+from app.services.storage_minio import ensure_bucket, get_minio_client, put_file_from_path as put_file_minio_from_path
 from app.services.summary_service import build_summary
 from app.services.telegram_notify import notify_openclaw
 
@@ -100,10 +100,17 @@ def _add_event(
     db.commit()
 
 
-def _compute_checksum(path: Path) -> tuple[str, bytes]:
-    content = path.read_bytes()
-    checksum = hashlib.sha256(content).hexdigest()
-    return checksum, content
+def _compute_checksum(path: Path) -> tuple[str, int]:
+    checksum = hashlib.sha256()
+    size_bytes = 0
+    with path.open("rb") as fp:
+        while True:
+            chunk = fp.read(1024 * 1024)
+            if not chunk:
+                break
+            checksum.update(chunk)
+            size_bytes += len(chunk)
+    return checksum.hexdigest(), size_bytes
 
 
 def _storage_key(checksum: str, extension: str | None) -> str:
@@ -117,13 +124,11 @@ def _store_file(db: Session, job: IngestJob) -> StoreResult:
     if not temp_path.exists():
         raise FileNotFoundError(f"temp file not found: {temp_path}")
 
-    checksum, content = _compute_checksum(temp_path)
+    checksum, size_bytes = _compute_checksum(temp_path)
     existing = find_by_checksum(db, checksum)
     filename = job.payload_json.get("filename") or temp_path.name
     mime_type, _ = mimetypes.guess_type(filename)
     mime_type = mime_type or "application/octet-stream"
-    size_bytes = len(content)
-
     duplicate_suspect = False
     if existing:
         linked_count = db.execute(
@@ -149,9 +154,9 @@ def _store_file(db: Session, job: IngestJob) -> StoreResult:
             secure=settings.minio_secure,
         )
         ensure_bucket(client, settings.storage_bucket)
-        put_file_minio(client, settings.storage_bucket, storage_key, content, mime_type)
+        put_file_minio_from_path(client, settings.storage_bucket, storage_key, str(temp_path), mime_type)
     else:
-        put_file_disk(settings.storage_disk_root, storage_key, content)
+        put_file_disk_from_path(settings.storage_disk_root, storage_key, str(temp_path))
 
     file_row = File(
         source=job.source,

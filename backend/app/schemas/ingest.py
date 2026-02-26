@@ -15,6 +15,23 @@ class IngestAcceptedResponse(BaseModel):
     queued_at: datetime
 
 
+class IngestJobStatusResponse(BaseModel):
+    job_id: UUID
+    state: IngestState
+    source: SourceType
+    source_ref: str | None = None
+    document_id: UUID | None = None
+    attempt_count: int
+    max_attempts: int
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    received_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    is_terminal: bool
+    success: bool
+
+
 class IngestBatchRejectedItem(BaseModel):
     index: int
     filename: str

@@ -1,20 +1,15 @@
-import Link from "next/link";
-import { Pencil } from "lucide-react";
 import { ArchiveViewSwitcher } from "@/components/archive/ArchiveViewSwitcher";
+import { ArchiveQuickPostInline } from "@/components/archive/ArchiveQuickPostInline";
 import { PageMenuHeading } from "@/components/layout/PageMenuHeading";
 
 export default function ArchivePage() {
   return (
     <section className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
+      <div className="grid gap-4 lg:grid-cols-[minmax(250px,1.8fr)_minmax(0,10.2fr)] lg:items-start">
         <PageMenuHeading title="아카이브" href="/archive" />
-        <Link
-          href="/manual-post"
-          className="inline-flex items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-xs font-medium text-stone-700 shadow-sm hover:bg-stone-100"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-          수동게시
-        </Link>
+        <div className="w-full min-w-0">
+          <ArchiveQuickPostInline />
+        </div>
       </div>
       <ArchiveViewSwitcher />
     </section>

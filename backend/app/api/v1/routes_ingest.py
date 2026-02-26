@@ -19,6 +19,7 @@ from app.schemas.ingest import (
     IngestActionResponse,
     IngestBatchAcceptedResponse,
     IngestBatchRejectedItem,
+    IngestJobStatusResponse,
 )
 from app.services.openclaw_actions import OpenClawActionTokenError, verify_action_token
 from app.worker.tasks_ingest import process_ingest_job_task
@@ -218,6 +219,40 @@ def _requeue_job_with_action(
         enqueued=True,
         queued_at=_now(),
         attempt_count=job.attempt_count,
+    )
+
+
+@router.get("/ingest/jobs/{job_id}", response_model=IngestJobStatusResponse)
+def get_ingest_job_status(
+    job_id: UUID,
+    current_user: CurrentUser = Depends(require_roles(UserRole.EDITOR, UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+) -> IngestJobStatusResponse:
+    job = db.get(IngestJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="ingest job not found")
+
+    if current_user.role != UserRole.ADMIN and job.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    success_states = {IngestState.PUBLISHED, IngestState.NEEDS_REVIEW}
+    terminal_states = {IngestState.PUBLISHED, IngestState.NEEDS_REVIEW, IngestState.FAILED}
+
+    return IngestJobStatusResponse(
+        job_id=job.id,
+        state=job.state,
+        source=job.source,
+        source_ref=job.source_ref,
+        document_id=job.document_id,
+        attempt_count=job.attempt_count,
+        max_attempts=job.max_attempts,
+        last_error_code=job.last_error_code,
+        last_error_message=job.last_error_message,
+        received_at=job.received_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        is_terminal=job.state in terminal_states,
+        success=job.state in success_states,
     )
 
 

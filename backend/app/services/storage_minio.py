@@ -1,4 +1,5 @@
 from io import BytesIO
+from pathlib import Path
 
 from minio import Minio
 from minio.error import S3Error
@@ -20,6 +21,15 @@ def put_file(client: Minio, bucket: str, storage_key: str, content: bytes, conte
         object_name=storage_key,
         data=data,
         length=len(content),
+        content_type=content_type,
+    )
+
+
+def put_file_from_path(client: Minio, bucket: str, storage_key: str, source_path: str, content_type: str) -> None:
+    client.fput_object(
+        bucket_name=bucket,
+        object_name=storage_key,
+        file_path=str(Path(source_path)),
         content_type=content_type,
     )
 

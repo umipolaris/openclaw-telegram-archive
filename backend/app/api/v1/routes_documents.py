@@ -1,5 +1,8 @@
 import hashlib
 import mimetypes
+import os
+import shutil
+import tempfile
 from difflib import unified_diff
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -7,7 +10,7 @@ from typing import Literal
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File as UploadFormFile, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File as UploadFormFile, Form, HTTPException, Query, Request, UploadFile, status
 from minio.error import S3Error
 from sqlalchemy import and_, asc, desc, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -56,15 +59,19 @@ from app.services.caption_parser import parse_caption
 from app.services.rule_categories import extract_categories_from_rules_json
 from app.services.rule_engine import RuleInput, apply_rules
 from app.services.search_sync_service import enqueue_document_index_delete, enqueue_document_index_sync
-from app.services.storage_disk import delete_file as delete_file_disk, put_file as put_file_disk
+from app.services.storage_disk import delete_file as delete_file_disk, put_file_from_path as put_file_disk_from_path
 from app.services.storage_minio import (
     delete_file as delete_file_minio,
     ensure_bucket,
     get_minio_client,
-    put_file as put_file_minio,
+    put_file_from_path as put_file_minio_from_path,
 )
 
 router = APIRouter()
+_UPLOAD_TMP_DIR = Path(tempfile.gettempdir()) / "doc-archive-upload"
+_UPLOAD_TMP_DIR.mkdir(parents=True, exist_ok=True)
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
+_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 def _now() -> datetime:
@@ -121,6 +128,57 @@ def _download_name(filename: str) -> str:
 def _content_disposition(filename: str) -> str:
     encoded = quote(_download_name(filename))
     return f"attachment; filename*=UTF-8''{encoded}"
+
+
+def _parse_http_range(range_header: str | None, total_size: int) -> tuple[int, int] | None:
+    if not range_header or total_size <= 0:
+        return None
+    value = range_header.strip().lower()
+    if not value.startswith("bytes="):
+        return None
+    range_spec = value[6:]
+    if "," in range_spec:
+        raise HTTPException(status_code=416, detail="multiple ranges not supported")
+    if "-" not in range_spec:
+        return None
+    start_text, end_text = range_spec.split("-", maxsplit=1)
+    try:
+        if start_text == "":
+            suffix_len = int(end_text)
+            if suffix_len <= 0:
+                raise ValueError
+            start = max(0, total_size - suffix_len)
+            end = total_size - 1
+        else:
+            start = int(start_text)
+            if start < 0:
+                raise ValueError
+            if end_text == "":
+                end = total_size - 1
+            else:
+                end = int(end_text)
+                if end < start:
+                    raise ValueError
+            end = min(end, total_size - 1)
+        if start >= total_size:
+            raise HTTPException(status_code=416, detail="range not satisfiable")
+        return start, end
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=416, detail="invalid range header") from exc
+
+
+def _iter_disk_file_range(path: Path, start: int, end: int, chunk_size: int):  # noqa: ANN202
+    remaining = end - start + 1
+    with path.open("rb") as fp:
+        fp.seek(start)
+        while remaining > 0:
+            chunk = fp.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
 
 
 def _get_tag_names(db: Session, document_id: UUID) -> list[str]:
@@ -424,48 +482,64 @@ def _store_uploaded_file(
     created_by: UUID,
 ) -> StoredFile:
     filename = upload.filename or "upload.bin"
-    content = upload.file.read()
-    checksum_sha256 = hashlib.sha256(content).hexdigest()
-    existing = find_by_checksum(db, checksum_sha256)
-    if existing:
-        return existing
+    suffix = Path(filename).suffix
+    fd, tmp_path_raw = tempfile.mkstemp(prefix="doc_upload_", suffix=suffix, dir=_UPLOAD_TMP_DIR)
+    tmp_path = Path(tmp_path_raw)
+    checksum_sha256 = hashlib.sha256()
+    size_bytes = 0
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = upload.file.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                checksum_sha256.update(chunk)
+                size_bytes += len(chunk)
+                out.write(chunk)
 
-    mime_type, _ = mimetypes.guess_type(filename)
-    mime_type = mime_type or "application/octet-stream"
-    extension = Path(filename).suffix.lstrip(".") or None
-    storage_key = _storage_key(checksum_sha256, extension)
-    settings = get_settings()
+        checksum = checksum_sha256.hexdigest()
+        existing = find_by_checksum(db, checksum)
+        if existing:
+            return existing
 
-    if settings.storage_backend == "minio":
-        client = get_minio_client(
-            endpoint=settings.minio_endpoint,
-            access_key=settings.minio_access_key,
-            secret_key=settings.minio_secret_key,
-            secure=settings.minio_secure,
+        mime_type, _ = mimetypes.guess_type(filename)
+        mime_type = mime_type or "application/octet-stream"
+        extension = Path(filename).suffix.lstrip(".") or None
+        storage_key = _storage_key(checksum, extension)
+        settings = get_settings()
+
+        if settings.storage_backend == "minio":
+            client = get_minio_client(
+                endpoint=settings.minio_endpoint,
+                access_key=settings.minio_access_key,
+                secret_key=settings.minio_secret_key,
+                secure=settings.minio_secure,
+            )
+            ensure_bucket(client, settings.storage_bucket)
+            put_file_minio_from_path(client, settings.storage_bucket, storage_key, str(tmp_path), mime_type)
+        else:
+            put_file_disk_from_path(settings.storage_disk_root, storage_key, str(tmp_path))
+
+        row = StoredFile(
+            source=source,
+            source_ref=source_ref,
+            storage_backend=settings.storage_backend,
+            bucket=settings.storage_bucket,
+            storage_key=storage_key,
+            original_filename=filename,
+            uploaded_filename=filename,
+            extension=extension,
+            checksum_sha256=checksum,
+            mime_type=mime_type,
+            size_bytes=size_bytes,
+            metadata_json={},
+            created_by=created_by,
         )
-        ensure_bucket(client, settings.storage_bucket)
-        put_file_minio(client, settings.storage_bucket, storage_key, content, mime_type)
-    else:
-        put_file_disk(settings.storage_disk_root, storage_key, content)
-
-    row = StoredFile(
-        source=source,
-        source_ref=source_ref,
-        storage_backend=settings.storage_backend,
-        bucket=settings.storage_bucket,
-        storage_key=storage_key,
-        original_filename=filename,
-        uploaded_filename=filename,
-        extension=extension,
-        checksum_sha256=checksum_sha256,
-        mime_type=mime_type,
-        size_bytes=len(content),
-        metadata_json={},
-        created_by=created_by,
-    )
-    db.add(row)
-    db.flush()
-    return row
+        db.add(row)
+        db.flush()
+        return row
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _delete_stored_object(file_row: StoredFile) -> None:
@@ -947,6 +1021,7 @@ def get_document_version_snapshot(
 @router.get("/files/{file_id}/download")
 def download_file(
     file_id: UUID,
+    request: Request,
     _: CurrentUser = Depends(require_roles(UserRole.VIEWER, UserRole.REVIEWER, UserRole.EDITOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
@@ -955,6 +1030,23 @@ def download_file(
         raise HTTPException(status_code=404, detail="file not found")
 
     settings = get_settings()
+    total_size = int(file_row.size_bytes or 0)
+    range_value = _parse_http_range(request.headers.get("range"), total_size)
+    headers = {
+        "Content-Disposition": _content_disposition(file_row.original_filename),
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(total_size),
+    }
+    status_code = 200
+    range_start = 0
+    range_end = max(0, total_size - 1)
+    if range_value:
+        range_start, range_end = range_value
+        content_length = range_end - range_start + 1
+        headers["Content-Range"] = f"bytes {range_start}-{range_end}/{total_size}"
+        headers["Content-Length"] = str(content_length)
+        status_code = 206
+
     if file_row.storage_backend == "minio":
         client = get_minio_client(
             endpoint=settings.minio_endpoint,
@@ -963,7 +1055,15 @@ def download_file(
             secure=settings.minio_secure,
         )
         try:
-            minio_resp = client.get_object(bucket_name=file_row.bucket, object_name=file_row.storage_key)
+            if range_value:
+                minio_resp = client.get_object(
+                    bucket_name=file_row.bucket,
+                    object_name=file_row.storage_key,
+                    offset=range_start,
+                    length=range_end - range_start + 1,
+                )
+            else:
+                minio_resp = client.get_object(bucket_name=file_row.bucket, object_name=file_row.storage_key)
         except S3Error as exc:
             if exc.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
                 raise HTTPException(status_code=404, detail="file object not found") from exc
@@ -971,7 +1071,7 @@ def download_file(
 
         def stream_chunks():  # noqa: ANN202
             try:
-                for chunk in minio_resp.stream(32 * 1024):
+                for chunk in minio_resp.stream(_DOWNLOAD_CHUNK_SIZE):
                     if chunk:
                         yield chunk
             finally:
@@ -981,16 +1081,24 @@ def download_file(
         return StreamingResponse(
             stream_chunks(),
             media_type=file_row.mime_type or "application/octet-stream",
-            headers={"Content-Disposition": _content_disposition(file_row.original_filename)},
+            headers=headers,
+            status_code=status_code,
         )
 
     file_path = Path(settings.storage_disk_root) / file_row.storage_key
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="file object not found")
+    if range_value:
+        return StreamingResponse(
+            _iter_disk_file_range(file_path, range_start, range_end, _DOWNLOAD_CHUNK_SIZE),
+            media_type=file_row.mime_type or "application/octet-stream",
+            headers=headers,
+            status_code=status_code,
+        )
     return FileResponse(
         path=str(file_path),
         media_type=file_row.mime_type or "application/octet-stream",
-        filename=_download_name(file_row.original_filename),
+        headers=headers,
     )
 
 

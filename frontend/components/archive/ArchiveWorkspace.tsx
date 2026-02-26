@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { apiDelete, apiGet, apiPatch, apiPostForm, buildApiUrl } from "@/lib/api-client";
 import { getCurrentUser, type UserRole } from "@/lib/auth";
@@ -20,6 +21,8 @@ import {
   ArrowUpDown,
   ListFilter,
   Clock3,
+  ChevronDown,
+  ChevronUp,
   Pencil,
   AlignLeft,
   RefreshCcw,
@@ -353,8 +356,21 @@ export function ArchiveWorkspace() {
   const [columnOptionsOpen, setColumnOptionsOpen] = useState(false);
   const [viewPresets, setViewPresets] = useState<ArchiveViewPreset[]>([]);
   const [viewPresetName, setViewPresetName] = useState("");
+  const [searchPanelOpen, setSearchPanelOpen] = useState(false);
+  const [listToolsPanelOpen, setListToolsPanelOpen] = useState(false);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [pageSize, total]);
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (searchQuery.trim()) count += 1;
+    if (reviewStatus) count += 1;
+    if (categoryFilter) count += 1;
+    if (yearFilter != null) count += 1;
+    if (monthFilter != null) count += 1;
+    if (sortBy !== "event_date") count += 1;
+    if (sortOrder !== "desc") count += 1;
+    return count;
+  }, [categoryFilter, monthFilter, reviewStatus, searchQuery, sortBy, sortOrder, yearFilter]);
   const isAdmin = userRole === "ADMIN";
   const canQuickResolveReview = userRole === "ADMIN" || userRole === "REVIEWER";
   const allSelectedOnPage = items.length > 0 && items.every((item) => bulkSelectedDocIds.includes(item.id));
@@ -448,6 +464,16 @@ export function ArchiveWorkspace() {
     void loadCurrentUserRole();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onArchiveRefresh = () => {
+      setRefreshTick((prev) => prev + 1);
+    };
+    window.addEventListener("archive:refresh", onArchiveRefresh);
+    return () => {
+      window.removeEventListener("archive:refresh", onArchiveRefresh);
     };
   }, []);
 
@@ -1187,174 +1213,215 @@ export function ArchiveWorkspace() {
       </article>
 
       <article className="rounded-lg border border-stone-200 bg-panel p-3 shadow-panel">
-        <div className="mb-3 grid gap-2 md:grid-cols-[1fr_180px_160px_120px_auto_auto]">
-          <label className="relative block">
-            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-stone-400" />
-            <input
-              className="w-full rounded border border-stone-300 py-2 pl-8 pr-3 text-sm"
-              placeholder="제목/본문 검색"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-            />
-          </label>
-          <label className="relative block">
-            <ListFilter className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-stone-400" />
-            <select
-              className="w-full rounded border border-stone-300 py-2 pl-8 pr-2 text-sm"
-              value={reviewStatus}
-              onChange={(e) => {
-                setReviewStatus((e.target.value as ReviewStatus | "") || "");
-                setPage(1);
-              }}
-            >
-              <option value="">검토상태 전체</option>
-              <option value="NONE">{reviewStatusLabel("NONE")}</option>
-              <option value="NEEDS_REVIEW">{reviewStatusLabel("NEEDS_REVIEW")}</option>
-              <option value="RESOLVED">{reviewStatusLabel("RESOLVED")}</option>
-            </select>
-          </label>
-          <label className="relative block">
-            <CalendarDays className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-stone-400" />
-            <select
-              className="w-full rounded border border-stone-300 py-2 pl-8 pr-2 text-sm"
-              value={sortBy}
-              onChange={(e) => {
-                setSortBy(parseSortBy(e.target.value));
-                setPage(1);
-              }}
-            >
-              <option value="event_date">정렬: 문서시점</option>
-              <option value="last_modified_at">정렬: 최종수정</option>
-              <option value="ingested_at">정렬: 수집시점</option>
-              <option value="created_at">정렬: 생성시점</option>
-              <option value="title">정렬: 제목</option>
-            </select>
-          </label>
-          <label className="relative block">
-            <ArrowUpDown className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-stone-400" />
-            <select
-              className="w-full rounded border border-stone-300 py-2 pl-8 pr-2 text-sm"
-              value={sortOrder}
-              onChange={(e) => {
-                setSortOrder(parseSortOrder(e.target.value));
-                setPage(1);
-              }}
-            >
-              <option value="desc">내림차순</option>
-              <option value="asc">오름차순</option>
-            </select>
-          </label>
-          <button className="inline-flex items-center gap-1 rounded bg-accent px-3 py-2 text-sm text-white" onClick={applySearch}>
-            <Search className="h-4 w-4" />
-            검색 적용
-          </button>
-          <button className="inline-flex items-center gap-1 rounded border border-stone-300 px-3 py-2 text-sm hover:bg-stone-50" onClick={clearFilters}>
-            <FilterX className="h-4 w-4" />
-            초기화
-          </button>
-        </div>
-
         <div className="mb-3 rounded border border-stone-200 bg-stone-50 p-2">
           <div className="flex flex-wrap items-center gap-2">
             <button
               className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs hover:bg-stone-100"
-              onClick={toggleDensity}
+              onClick={() => setSearchPanelOpen((prev) => !prev)}
               type="button"
             >
-              <List className="h-3.5 w-3.5" />
-              {listDensity === "default" ? "컴팩트 보기" : "기본 밀도 보기"}
+              <Search className="h-3.5 w-3.5" />
+              검색/필터
+              {searchPanelOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
             </button>
             <button
               className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs hover:bg-stone-100"
-              onClick={() => setColumnOptionsOpen((prev) => !prev)}
+              onClick={() => setListToolsPanelOpen((prev) => !prev)}
               type="button"
             >
               <SlidersHorizontal className="h-3.5 w-3.5" />
-              컬럼 설정
+              보기/컬럼설정
+              {listToolsPanelOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
             </button>
-            <span className="text-[11px] text-stone-600">단축키: ↑/↓ 선택 이동, Enter 상세 열기, Del(관리자 삭제)</span>
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <input
-              className="w-full max-w-[240px] rounded border border-stone-300 px-2 py-1 text-xs"
-              value={viewPresetName}
-              onChange={(e) => setViewPresetName(e.target.value)}
-              placeholder="화면 프리셋 이름"
-            />
-            <button
-              className="rounded border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100"
-              onClick={saveCurrentViewPreset}
-              type="button"
+            <span className="text-[11px] text-stone-600">활성 필터 {activeFilterCount}개</span>
+            {activeFilterCount > 0 ? (
+              <button className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs hover:bg-stone-100" onClick={clearFilters}>
+                <FilterX className="h-3.5 w-3.5" />
+                필터 초기화
+              </button>
+            ) : null}
+            <Link
+              href="/manual-post"
+              className="ml-auto inline-flex items-center justify-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs text-stone-700 hover:bg-stone-50"
             >
-              현재 화면 저장
+              <Pencil className="h-3.5 w-3.5" />
+              상세게시
+            </Link>
+          </div>
+        </div>
+
+        {searchPanelOpen ? (
+          <div className="mb-3 grid gap-2 rounded border border-stone-200 bg-stone-50 p-2 md:grid-cols-[1fr_180px_160px_120px_auto_auto]">
+            <label className="relative block">
+              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-stone-400" />
+              <input
+                className="w-full rounded border border-stone-300 py-2 pl-8 pr-3 text-sm"
+                placeholder="제목/본문 검색"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+              />
+            </label>
+            <label className="relative block">
+              <ListFilter className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-stone-400" />
+              <select
+                className="w-full rounded border border-stone-300 py-2 pl-8 pr-2 text-sm"
+                value={reviewStatus}
+                onChange={(e) => {
+                  setReviewStatus((e.target.value as ReviewStatus | "") || "");
+                  setPage(1);
+                }}
+              >
+                <option value="">검토상태 전체</option>
+                <option value="NONE">{reviewStatusLabel("NONE")}</option>
+                <option value="NEEDS_REVIEW">{reviewStatusLabel("NEEDS_REVIEW")}</option>
+                <option value="RESOLVED">{reviewStatusLabel("RESOLVED")}</option>
+              </select>
+            </label>
+            <label className="relative block">
+              <CalendarDays className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-stone-400" />
+              <select
+                className="w-full rounded border border-stone-300 py-2 pl-8 pr-2 text-sm"
+                value={sortBy}
+                onChange={(e) => {
+                  setSortBy(parseSortBy(e.target.value));
+                  setPage(1);
+                }}
+              >
+                <option value="event_date">정렬: 문서시점</option>
+                <option value="last_modified_at">정렬: 최종수정</option>
+                <option value="ingested_at">정렬: 수집시점</option>
+                <option value="created_at">정렬: 생성시점</option>
+                <option value="title">정렬: 제목</option>
+              </select>
+            </label>
+            <label className="relative block">
+              <ArrowUpDown className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-stone-400" />
+              <select
+                className="w-full rounded border border-stone-300 py-2 pl-8 pr-2 text-sm"
+                value={sortOrder}
+                onChange={(e) => {
+                  setSortOrder(parseSortOrder(e.target.value));
+                  setPage(1);
+                }}
+              >
+                <option value="desc">내림차순</option>
+                <option value="asc">오름차순</option>
+              </select>
+            </label>
+            <button className="inline-flex items-center gap-1 rounded bg-accent px-3 py-2 text-sm text-white" onClick={applySearch}>
+              <Search className="h-4 w-4" />
+              검색 적용
+            </button>
+            <button className="inline-flex items-center gap-1 rounded border border-stone-300 px-3 py-2 text-sm hover:bg-stone-50" onClick={clearFilters}>
+              <FilterX className="h-4 w-4" />
+              초기화
             </button>
           </div>
-          {viewPresets.length > 0 ? (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {viewPresets.map((preset) => (
-                <span key={`preset-${preset.id}`} className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-1.5 py-1 text-[11px]">
-                  <button className="font-medium text-stone-800 hover:underline" onClick={() => applyViewPreset(preset)} type="button">
-                    {preset.name}
-                  </button>
-                  <button
-                    className="rounded border border-red-200 px-1 py-0.5 text-[10px] text-red-600 hover:bg-red-50"
-                    onClick={() => deleteViewPreset(preset.id)}
-                    type="button"
-                    title="프리셋 삭제"
-                  >
-                    삭제
-                  </button>
-                </span>
-              ))}
+        ) : null}
+
+        {listToolsPanelOpen ? (
+          <div className="mb-3 rounded border border-stone-200 bg-stone-50 p-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs hover:bg-stone-100"
+                onClick={toggleDensity}
+                type="button"
+              >
+                <List className="h-3.5 w-3.5" />
+                {listDensity === "default" ? "컴팩트 보기" : "기본 밀도 보기"}
+              </button>
+              <button
+                className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs hover:bg-stone-100"
+                onClick={() => setColumnOptionsOpen((prev) => !prev)}
+                type="button"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                컬럼 설정
+              </button>
+              <span className="text-[11px] text-stone-600">단축키: ↑/↓ 선택 이동, Enter 상세 열기, Del(관리자 삭제)</span>
             </div>
-          ) : null}
-          {columnOptionsOpen ? (
-            <div className="mt-2 space-y-1 rounded border border-stone-200 bg-white p-2">
-              {ARCHIVE_COLUMN_ORDER_DEFAULT.map((column) => {
-                const checked = visibleColumns.includes(column);
-                const orderIndex = visibleColumns.indexOf(column);
-                return (
-                  <div key={`archive-column-${column}`} className="flex items-center justify-between gap-2">
-                    <label className="inline-flex items-center gap-2 text-xs text-stone-700">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={column === "title"}
-                        onChange={(e) => toggleColumnVisibility(column, e.target.checked)}
-                      />
-                      {ARCHIVE_COLUMN_LABELS[column]}
-                      {column === "title" ? <span className="text-[10px] text-stone-500">(필수)</span> : null}
-                    </label>
-                    {checked ? (
-                      <div className="inline-flex items-center gap-1">
-                        <button
-                          className="rounded border border-stone-300 px-1 py-0.5 text-[10px] hover:bg-stone-100 disabled:opacity-50"
-                          onClick={() => moveColumn(column, "up")}
-                          disabled={orderIndex <= 0}
-                          type="button"
-                          title="위로 이동"
-                        >
-                          <ArrowUp className="h-3 w-3" />
-                        </button>
-                        <button
-                          className="rounded border border-stone-300 px-1 py-0.5 text-[10px] hover:bg-stone-100 disabled:opacity-50"
-                          onClick={() => moveColumn(column, "down")}
-                          disabled={orderIndex < 0 || orderIndex >= visibleColumns.length - 1}
-                          type="button"
-                          title="아래로 이동"
-                        >
-                          <ArrowDown className="h-3 w-3" />
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="text-[10px] text-stone-400">숨김</span>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                className="w-full max-w-[240px] rounded border border-stone-300 px-2 py-1 text-xs"
+                value={viewPresetName}
+                onChange={(e) => setViewPresetName(e.target.value)}
+                placeholder="화면 프리셋 이름"
+              />
+              <button
+                className="rounded border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100"
+                onClick={saveCurrentViewPreset}
+                type="button"
+              >
+                현재 화면 저장
+              </button>
             </div>
-          ) : null}
-        </div>
+            {viewPresets.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1">
+                {viewPresets.map((preset) => (
+                  <span key={`preset-${preset.id}`} className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-1.5 py-1 text-[11px]">
+                    <button className="font-medium text-stone-800 hover:underline" onClick={() => applyViewPreset(preset)} type="button">
+                      {preset.name}
+                    </button>
+                    <button
+                      className="rounded border border-red-200 px-1 py-0.5 text-[10px] text-red-600 hover:bg-red-50"
+                      onClick={() => deleteViewPreset(preset.id)}
+                      type="button"
+                      title="프리셋 삭제"
+                    >
+                      삭제
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {columnOptionsOpen ? (
+              <div className="mt-2 space-y-1 rounded border border-stone-200 bg-white p-2">
+                {ARCHIVE_COLUMN_ORDER_DEFAULT.map((column) => {
+                  const checked = visibleColumns.includes(column);
+                  const orderIndex = visibleColumns.indexOf(column);
+                  return (
+                    <div key={`archive-column-${column}`} className="flex items-center justify-between gap-2">
+                      <label className="inline-flex items-center gap-2 text-xs text-stone-700">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={column === "title"}
+                          onChange={(e) => toggleColumnVisibility(column, e.target.checked)}
+                        />
+                        {ARCHIVE_COLUMN_LABELS[column]}
+                        {column === "title" ? <span className="text-[10px] text-stone-500">(필수)</span> : null}
+                      </label>
+                      {checked ? (
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            className="rounded border border-stone-300 px-1 py-0.5 text-[10px] hover:bg-stone-100 disabled:opacity-50"
+                            onClick={() => moveColumn(column, "up")}
+                            disabled={orderIndex <= 0}
+                            type="button"
+                            title="위로 이동"
+                          >
+                            <ArrowUp className="h-3 w-3" />
+                          </button>
+                          <button
+                            className="rounded border border-stone-300 px-1 py-0.5 text-[10px] hover:bg-stone-100 disabled:opacity-50"
+                            onClick={() => moveColumn(column, "down")}
+                            disabled={orderIndex < 0 || orderIndex >= visibleColumns.length - 1}
+                            type="button"
+                            title="아래로 이동"
+                          >
+                            <ArrowDown className="h-3 w-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-[10px] text-stone-400">숨김</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="mb-2 text-xs text-stone-600">
           총 {total.toLocaleString("ko-KR")}건 | 페이지 {page}/{totalPages}

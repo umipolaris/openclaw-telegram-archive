@@ -310,8 +310,8 @@ function MindNode({
   active = false,
   onClick,
 }: NodeVisual) {
-  const charsPerLine = Math.max(8, Math.floor(rx / 7) + 5);
-  const lines = splitLabel(label, charsPerLine, 3);
+  const charsPerLine = clamp(Math.floor(rx / 7) + 5, 8, 13);
+  const lines = splitLabel(label, charsPerLine, 2);
   const lineHeight = clamp(labelFontSize + 2, 12, 18);
   const labelBlockHeight = (lines.length - 1) * lineHeight;
   const labelStartY = meta ? -10 - labelBlockHeight / 2 : -labelBlockHeight / 2;

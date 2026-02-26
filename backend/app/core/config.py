@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     meili_index_documents: str = "documents"
     meili_timeout_seconds: float = 3.0
 
+    backup_root: str = "/backup"
+    backup_config_root: str = "/config"
+    backup_retention_days: int = 30
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

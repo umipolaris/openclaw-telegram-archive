@@ -4,7 +4,7 @@ APP_PROFILE ?= dev
 ADMIN_USER ?= admin
 ADMIN_PASS ?= ChangeMe123!
 
-.PHONY: doctor up down restart ps logs health wait-api first-run bootstrap-admin install-hooks guard-staged guard-all
+.PHONY: doctor up down restart ps logs health wait-api first-run bootstrap-admin install-hooks guard-staged guard-all backup-db backup-objects backup-config backup-all restore-db restore-objects restore-config
 
 doctor:
 	@./infra/scripts/doctor.sh
@@ -55,3 +55,36 @@ guard-staged:
 
 guard-all:
 	@./scripts/check_sensitive_guard.sh --all
+
+backup-db:
+	@cd infra && APP_PROFILE=$(APP_PROFILE) ./scripts/db-backup.sh
+
+backup-objects:
+	@cd infra && APP_PROFILE=$(APP_PROFILE) ./scripts/backup-objects.sh
+
+backup-config:
+	@cd infra && APP_PROFILE=$(APP_PROFILE) ./scripts/backup-config.sh
+
+backup-all: backup-db backup-objects backup-config
+	@echo "all backup steps completed"
+
+restore-db:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+	  echo "Usage: make restore-db BACKUP_FILE=./infra/data/backup/db/archive_YYYYMMDD_HHMMSS.dump CONFIRM=YES"; \
+	  exit 1; \
+	fi
+	@cd infra && APP_PROFILE=$(APP_PROFILE) CONFIRM=$(CONFIRM) TARGET_DB=$(TARGET_DB) ./scripts/db-restore.sh "$(BACKUP_FILE)"
+
+restore-objects:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+	  echo "Usage: make restore-objects BACKUP_FILE=./infra/data/backup/objects/objects_minio_YYYYMMDD_HHMMSS.tar.gz CONFIRM=YES"; \
+	  exit 1; \
+	fi
+	@cd infra && APP_PROFILE=$(APP_PROFILE) CONFIRM=$(CONFIRM) TARGET_DIR=$(TARGET_DIR) ./scripts/restore-objects.sh "$(BACKUP_FILE)"
+
+restore-config:
+	@if [ -z "$(BACKUP_FILE)" ]; then \
+	  echo "Usage: make restore-config BACKUP_FILE=./infra/data/backup/config/config_YYYYMMDD_HHMMSS.tar.gz MODE=preview"; \
+	  exit 1; \
+	fi
+	@cd infra && APP_PROFILE=$(APP_PROFILE) MODE=$(MODE) CONFIRM=$(CONFIRM) ./scripts/restore-config.sh "$(BACKUP_FILE)"

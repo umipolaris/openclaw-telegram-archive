@@ -75,6 +75,11 @@ services:
     volumes:
       - ../backend:/app
       - ./data/ingest_tmp:/tmp/doc-archive-ingest
+      - ./data/backup:/backup
+      - ./env:/config/env
+      - ./monitoring:/config/monitoring
+      - ./docker-compose.yml:/config/docker-compose.yml
+      - ./data/archive:/data/archive
 
   worker:
     build:
@@ -92,6 +97,7 @@ services:
     volumes:
       - ../backend:/app
       - ./data/ingest_tmp:/tmp/doc-archive-ingest
+      - ./data/archive:/data/archive
 
   beat:
     build:
@@ -144,6 +150,11 @@ services:
     volumes:
       - ./scripts:/scripts
       - ./data/backup:/backup
+      - ./data/minio:/data/minio:ro
+      - ./data/archive:/data/archive:ro
+      - ./env:/config/env:ro
+      - ./monitoring:/config/monitoring:ro
+      - ./docker-compose.yml:/config/docker-compose.yml:ro
     entrypoint: ["sh", "/scripts/backup-cron.sh"]
     depends_on:
       - postgres
