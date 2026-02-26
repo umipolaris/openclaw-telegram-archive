@@ -4,6 +4,80 @@
 이관 런북: `docs/MIGRATION_RUNBOOK.md`
 릴리즈 체크리스트: `docs/RELEASE_CHECKLIST.md`
 
+## 제품 개요
+이 시스템은 Telegram/OpenClaw로 들어온 파일·메모를 자동 수집해 문서 아카이브로 운영할 수 있게 만든 플랫폼입니다.
+
+- 수집: 파일 저장, 캡션 우선 메타 추출, 날짜/분류/태그 인덱싱
+- 운영: 검토 큐, 규칙 버전 관리, 백필 재처리, 운영/감사 로그
+- 활용: 웹 아카이브, 타임라인, 고급 검색, 관계형 마인드맵
+
+## 어디에 사용할 수 있나
+- 프로젝트 문서 포털: 회의록/도면/매뉴얼/공문 통합 아카이빙
+- 조직 지식베이스: 채팅 기반 업로드 + 검색/타임라인 조회
+- 규정/절차 이력 관리: 버전 히스토리 + 검토 상태 추적
+- 운영팀 백오피스: 분류 규칙 실험/반영/백필 자동화
+
+## 핵심 특징
+- 캡션 우선 규칙 엔진: `title/description/#분류/#날짜/#태그` 우선 처리
+- 비동기 파이프라인: FastAPI + Celery + Redis 상태머신 처리
+- 중복 방지 저장: SHA256 기반 파일 저장 + 논리 링크
+- 계층형 IA UI: Archive/Timeline/Search/Review Queue/Rules/Admin
+- 운영자 중심 규칙 관리: UI 편집 + JSON import/export + backfill
+- 대용량 대비: Postgres 인덱스/페이지네이션/가상화 리스트
+- 검색 확장: Postgres FTS 기본 + Meilisearch 옵션
+- 관측성: 구조화 로그, Prometheus 메트릭, 기본 알림 규칙
+
+## 장점
+- 채팅 기반 업로드를 운영 가능한 문서 시스템으로 즉시 전환 가능
+- 규칙 변경과 재처리를 운영자가 직접 수행 가능
+- ingest 실패/검토 필요 건을 분리해 운영 리스크를 낮춤
+- Docker Compose로 개발/운영 환경 재현성이 높음
+
+## 한계 및 주의사항
+- OCR/고급 내용 추출은 기본 범위가 아니며 파일 유형별 제약이 있음
+- Meilisearch 미사용 시 복합 검색 성능은 DB 의존적
+- Telegram/OpenClaw 연동 품질은 외부 시스템 상태에 영향받음
+- 프로덕션 배포 전에는 비밀번호/비밀키/도메인 값을 반드시 교체해야 함
+
+## 스크린샷
+![로그인 화면](docs/screenshots/login.png)
+![아카이브 화면](docs/screenshots/archive.png)
+![타임라인 화면](docs/screenshots/timeline.png)
+![규칙 관리 화면](docs/screenshots/rules.png)
+![마인드맵 화면](docs/screenshots/mind-map.png)
+![검색 화면](docs/screenshots/search.png)
+
+스크린샷 갱신:
+```bash
+./scripts/capture_screenshots.sh
+```
+
+## 시스템 요구사항
+| 구분 | 최소 | 권장 |
+| --- | --- | --- |
+| OS | macOS/Linux/Windows(WSL2) | Linux 서버 또는 macOS |
+| CPU | 4 vCPU | 8 vCPU+ |
+| 메모리 | 8GB | 16GB+ |
+| 디스크 | 20GB SSD | 50GB+ SSD |
+| 네트워크 | 인터넷(이미지/패키지 pull) | 고정 대역폭 |
+
+## 필수 소프트웨어
+- Docker Engine 또는 Docker Desktop
+- Docker Compose(`docker compose` 또는 `docker-compose`)
+- `curl`
+- 선택: `make`(없으면 `./scripts/quickstart.sh`)
+
+## 기술 스택 및 핵심 라이브러리
+| 레이어 | 스택/라이브러리 |
+| --- | --- |
+| Backend | FastAPI, SQLAlchemy, Alembic, Pydantic, Uvicorn |
+| Worker | Celery, Redis |
+| Storage/DB | PostgreSQL 15+, MinIO(S3 호환) |
+| Search | PostgreSQL FTS, Meilisearch(옵션) |
+| Frontend | Next.js 14, TypeScript, Tailwind CSS, shadcn/ui 기반 컴포넌트 |
+| Observability | structlog(JSON), prometheus-client, Prometheus |
+| Infra/CI | Docker Compose, GitHub Actions |
+
 ## 실행 전 요구사항
 - Docker Engine 또는 Docker Desktop (daemon 실행 상태)
 - Docker Compose (`docker compose` 또는 `docker-compose`)
