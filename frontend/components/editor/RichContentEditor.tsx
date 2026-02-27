@@ -18,9 +18,15 @@ type RichContentEditorProps = {
   value: string;
   onChange: (next: string) => void;
   minHeightClassName?: string;
+  attachmentLinks?: RichContentAttachmentLink[];
 };
 
 type EditorViewMode = "visual" | "html";
+
+export type RichContentAttachmentLink = {
+  label: string;
+  href: string;
+};
 
 function buttonClass(active = false): string {
   if (active) {
@@ -29,11 +35,27 @@ function buttonClass(active = false): string {
   return "rounded border border-stone-300 bg-white px-2 py-1 text-[11px] text-stone-700 hover:bg-stone-50";
 }
 
-export function RichContentEditor({ value, onChange, minHeightClassName = "min-h-[240px]" }: RichContentEditorProps) {
+export function RichContentEditor({
+  value,
+  onChange,
+  minHeightClassName = "min-h-[240px]",
+  attachmentLinks = [],
+}: RichContentEditorProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const normalizedInitial = useMemo(() => normalizeRichContentHtml(value), [value]);
+  const normalizedAttachmentLinks = useMemo(
+    () =>
+      attachmentLinks
+        .map((item) => ({
+          label: item.label?.trim() || item.href?.trim() || "첨부파일",
+          href: item.href?.trim() || "",
+        }))
+        .filter((item) => item.href.length > 0),
+    [attachmentLinks],
+  );
   const [viewMode, setViewMode] = useState<EditorViewMode>("visual");
   const [htmlSource, setHtmlSource] = useState<string>(normalizedInitial);
+  const [selectedAttachmentHref, setSelectedAttachmentHref] = useState("");
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -70,6 +92,16 @@ export function RichContentEditor({ value, onChange, minHeightClassName = "min-h
     }
   }, [editor, value, viewMode]);
 
+  useEffect(() => {
+    if (normalizedAttachmentLinks.length === 0) {
+      if (selectedAttachmentHref) setSelectedAttachmentHref("");
+      return;
+    }
+    if (!normalizedAttachmentLinks.some((item) => item.href === selectedAttachmentHref)) {
+      setSelectedAttachmentHref(normalizedAttachmentLinks[0].href);
+    }
+  }, [normalizedAttachmentLinks, selectedAttachmentHref]);
+
   const insertImageUrl = () => {
     if (!editor) return;
     const url = window.prompt("이미지 URL을 입력하세요");
@@ -94,6 +126,16 @@ export function RichContentEditor({ value, onChange, minHeightClassName = "min-h
     const url = window.prompt("링크 URL을 입력하세요");
     if (!url) return;
     editor.chain().focus().setLink({ href: url, target: "_blank", rel: "noopener noreferrer" }).run();
+  };
+
+  const insertAttachmentLink = () => {
+    if (!editor || !selectedAttachmentHref) return;
+    const selected =
+      normalizedAttachmentLinks.find((item) => item.href === selectedAttachmentHref) || normalizedAttachmentLinks[0];
+    if (!selected) return;
+    const href = escapeHtml(selected.href);
+    const label = escapeHtml(selected.label || selected.href);
+    editor.chain().focus().insertContent(`<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`).run();
   };
 
   const insertFormula = (display: boolean) => {
@@ -178,6 +220,25 @@ export function RichContentEditor({ value, onChange, minHeightClassName = "min-h
         <button type="button" className={buttonClass()} onClick={insertLink} title="링크">
           <Link2 className="h-3.5 w-3.5" />
         </button>
+        {normalizedAttachmentLinks.length > 0 ? (
+          <>
+            <select
+              className="h-7 max-w-[14rem] rounded border border-stone-300 bg-white px-2 text-[11px] text-stone-700"
+              value={selectedAttachmentHref}
+              onChange={(e) => setSelectedAttachmentHref(e.target.value)}
+              title="첨부파일 선택"
+            >
+              {normalizedAttachmentLinks.map((item) => (
+                <option key={`${item.href}-${item.label}`} value={item.href}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+            <button type="button" className={buttonClass()} onClick={insertAttachmentLink} title="첨부파일 링크 삽입">
+              첨부링크
+            </button>
+          </>
+        ) : null}
         <button type="button" className={buttonClass()} onClick={insertImageUrl} title="이미지 URL">
           <ImagePlus className="h-3.5 w-3.5" />
           URL

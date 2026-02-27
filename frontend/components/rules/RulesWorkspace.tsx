@@ -2,15 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Braces,
   CircleAlert,
   FileText,
   Files,
   History,
   ListFilter,
   Pencil,
+  Plus,
   RefreshCcw,
   Search,
   ShieldCheck,
+  Trash2,
 } from "lucide-react";
 import { apiFetch, apiGet, apiPost } from "@/lib/api-client";
 import { getCurrentUser, type UserRole } from "@/lib/auth";
@@ -121,6 +124,31 @@ type RuleTestSampleInput = {
   body_text: string;
 };
 
+type RuleKeywordField = "title" | "description" | "filename" | "body";
+
+type CategoryRuleForm = {
+  id: string;
+  category: string;
+  titleKeywords: string;
+  descriptionKeywords: string;
+  filenameKeywords: string;
+  bodyKeywords: string;
+  tags: string;
+};
+
+type TagCategoryRuleForm = {
+  id: string;
+  category: string;
+  tags: string;
+  match: "any" | "all";
+};
+
+type RulesFormState = {
+  defaultCategory: string;
+  categoryRules: CategoryRuleForm[];
+  tagCategoryRules: TagCategoryRuleForm[];
+};
+
 const DEFAULT_RULES = {
   default_category: "기타",
   category_rules: [
@@ -159,6 +187,155 @@ function toNullableText(value: string): string | null {
   return trimmed ? trimmed : null;
 }
 
+function localId(): string {
+  return `row_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const token = String(raw ?? "").trim();
+    if (!token) continue;
+    const key = token.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(token);
+  }
+  return out;
+}
+
+function parseTokenListInput(value: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value.split(/[,\n]/g)) {
+    const token = raw.trim();
+    if (!token) continue;
+    const key = token.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(token);
+  }
+  return out;
+}
+
+function joinTokenList(tokens: string[]): string {
+  return tokens.join(", ");
+}
+
+function emptyCategoryRuleForm(): CategoryRuleForm {
+  return {
+    id: localId(),
+    category: "",
+    titleKeywords: "",
+    descriptionKeywords: "",
+    filenameKeywords: "",
+    bodyKeywords: "",
+    tags: "",
+  };
+}
+
+function emptyTagCategoryRuleForm(): TagCategoryRuleForm {
+  return {
+    id: localId(),
+    category: "",
+    tags: "",
+    match: "any",
+  };
+}
+
+function parseRulesJsonToForm(rulesJson: Record<string, unknown>): RulesFormState {
+  const defaultCategoryRaw = rulesJson.default_category;
+  const defaultCategory = typeof defaultCategoryRaw === "string" && defaultCategoryRaw.trim() ? defaultCategoryRaw.trim() : "기타";
+
+  const categoryRulesRaw = Array.isArray(rulesJson.category_rules) ? rulesJson.category_rules : [];
+  const categoryRules: CategoryRuleForm[] = categoryRulesRaw
+    .filter((row): row is Record<string, unknown> => isPlainObject(row))
+    .map((row) => {
+      const keywords = isPlainObject(row.keywords) ? row.keywords : {};
+      return {
+        id: localId(),
+        category: String(row.category ?? "").trim(),
+        titleKeywords: joinTokenList(toStringArray(keywords.title)),
+        descriptionKeywords: joinTokenList(toStringArray(keywords.description)),
+        filenameKeywords: joinTokenList(toStringArray(keywords.filename)),
+        bodyKeywords: joinTokenList(toStringArray(keywords.body)),
+        tags: joinTokenList(toStringArray(row.tags)),
+      };
+    });
+
+  const tagCategoryRulesRaw = Array.isArray(rulesJson.tag_category_rules) ? rulesJson.tag_category_rules : [];
+  const tagCategoryRules: TagCategoryRuleForm[] = tagCategoryRulesRaw
+    .filter((row): row is Record<string, unknown> => isPlainObject(row))
+    .map((row) => {
+      const rawMatch = String(row.match ?? "any").trim().toLowerCase();
+      return {
+        id: localId(),
+        category: String(row.category ?? "").trim(),
+        tags: joinTokenList(toStringArray(row.tags)),
+        match: rawMatch === "all" ? "all" : "any",
+      };
+    });
+
+  return {
+    defaultCategory,
+    categoryRules,
+    tagCategoryRules,
+  };
+}
+
+function buildRulesJsonFromForm(form: RulesFormState): Record<string, unknown> {
+  const categoryRules = form.categoryRules
+    .map((row) => {
+      const category = row.category.trim();
+      if (!category) return null;
+
+      const keywords: Record<string, string[]> = {};
+      const titleKeywords = parseTokenListInput(row.titleKeywords);
+      const descriptionKeywords = parseTokenListInput(row.descriptionKeywords);
+      const filenameKeywords = parseTokenListInput(row.filenameKeywords);
+      const bodyKeywords = parseTokenListInput(row.bodyKeywords);
+      if (titleKeywords.length) keywords.title = titleKeywords;
+      if (descriptionKeywords.length) keywords.description = descriptionKeywords;
+      if (filenameKeywords.length) keywords.filename = filenameKeywords;
+      if (bodyKeywords.length) keywords.body = bodyKeywords;
+
+      const payload: Record<string, unknown> = {
+        category,
+      };
+      if (Object.keys(keywords).length > 0) payload.keywords = keywords;
+      const tags = parseTokenListInput(row.tags);
+      if (tags.length) payload.tags = tags;
+      return payload;
+    })
+    .filter((row): row is Record<string, unknown> => Boolean(row));
+
+  const tagCategoryRules = form.tagCategoryRules
+    .map((row) => {
+      const category = row.category.trim();
+      if (!category) return null;
+      const tags = parseTokenListInput(row.tags);
+      if (tags.length === 0) return null;
+      return {
+        category,
+        tags,
+        match: row.match === "all" ? "all" : "any",
+      };
+    })
+    .filter((row): row is { category: string; tags: string[]; match: "any" | "all" } => Boolean(row));
+
+  return {
+    default_category: form.defaultCategory.trim() || "기타",
+    category_rules: categoryRules,
+    tag_category_rules: tagCategoryRules,
+  };
+}
+
 export function RulesWorkspace() {
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [rulesets, setRulesets] = useState<RulesetSummary[]>([]);
@@ -167,6 +344,10 @@ export function RulesWorkspace() {
   const [selectedVersionId, setSelectedVersionId] = useState("");
   const [versionDetail, setVersionDetail] = useState<RuleVersionDetailResponse | null>(null);
   const [rulesJsonText, setRulesJsonText] = useState(JSON.stringify(DEFAULT_RULES, null, 2));
+  const [rulesEditorMode, setRulesEditorMode] = useState<"form" | "json">("form");
+  const [rulesForm, setRulesForm] = useState<RulesFormState>(() =>
+    parseRulesJsonToForm(DEFAULT_RULES as Record<string, unknown>),
+  );
 
   const [createName, setCreateName] = useState("");
   const [createDescription, setCreateDescription] = useState("");
@@ -215,6 +396,22 @@ export function RulesWorkspace() {
   const selectedVersion = useMemo(() => {
     return versions.find((row) => row.id === selectedVersionId) ?? null;
   }, [versions, selectedVersionId]);
+
+  const syncRulesJsonFromForm = useCallback((nextForm: RulesFormState) => {
+    setRulesForm(nextForm);
+    setRulesJsonText(JSON.stringify(buildRulesJsonFromForm(nextForm), null, 2));
+  }, []);
+
+  const updateRulesForm = useCallback(
+    (updater: (prev: RulesFormState) => RulesFormState) => {
+      setRulesForm((prev) => {
+        const next = updater(prev);
+        setRulesJsonText(JSON.stringify(buildRulesJsonFromForm(next), null, 2));
+        return next;
+      });
+    },
+    [],
+  );
 
   const loadRulesets = useCallback(async () => {
     setLoadingRulesets(true);
@@ -269,6 +466,7 @@ export function RulesWorkspace() {
       const res = await apiGet<RuleVersionDetailResponse>(`/rule-versions/${versionId}`);
       setVersionDetail(res);
       setRulesJsonText(JSON.stringify(res.rules_json, null, 2));
+      setRulesForm(parseRulesJsonToForm(res.rules_json ?? {}));
     } catch (err) {
       setError(err instanceof Error ? err.message : "규칙 버전 로드 실패");
       setVersionDetail(null);
@@ -369,7 +567,11 @@ export function RulesWorkspace() {
     if (!isAdmin || !selectedRulesetId) return;
 
     await runAction("create-version", async () => {
-      const rulesJson = parseRulesJson(rulesJsonText);
+      const rulesJson =
+        rulesEditorMode === "json" ? parseRulesJson(rulesJsonText) : buildRulesJsonFromForm(rulesForm);
+      const normalized = JSON.stringify(rulesJson, null, 2);
+      setRulesJsonText(normalized);
+      setRulesForm(parseRulesJsonToForm(rulesJson));
       const created = await apiPost<RuleVersionSummary>(`/rulesets/${selectedRulesetId}/versions`, {
         rules_json: rulesJson,
       });
@@ -528,6 +730,81 @@ export function RulesWorkspace() {
         `규칙 가져오기 완료: 버전수=${result.imported_versions}, 활성버전=${result.activated_version_id ?? "-"}`,
       );
     });
+  };
+
+  const resetRulesTemplate = () => {
+    const nextForm = parseRulesJsonToForm(DEFAULT_RULES as Record<string, unknown>);
+    syncRulesJsonFromForm(nextForm);
+  };
+
+  const applyJsonToForm = () => {
+    try {
+      const parsed = parseRulesJson(rulesJsonText);
+      const nextForm = parseRulesJsonToForm(parsed);
+      syncRulesJsonFromForm(nextForm);
+      setMessage("JSON을 폼 편집기에 반영했습니다.");
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "JSON 파싱 실패");
+    }
+  };
+
+  const addCategoryRuleFormRow = () => {
+    updateRulesForm((prev) => ({
+      ...prev,
+      categoryRules: [...prev.categoryRules, emptyCategoryRuleForm()],
+    }));
+  };
+
+  const removeCategoryRuleFormRow = (rowId: string) => {
+    updateRulesForm((prev) => ({
+      ...prev,
+      categoryRules: prev.categoryRules.filter((row) => row.id !== rowId),
+    }));
+  };
+
+  const updateCategoryRuleFormRow = (rowId: string, patch: Partial<CategoryRuleForm>) => {
+    updateRulesForm((prev) => ({
+      ...prev,
+      categoryRules: prev.categoryRules.map((row) => (row.id === rowId ? { ...row, ...patch } : row)),
+    }));
+  };
+
+  const updateCategoryRuleKeyword = (rowId: string, field: RuleKeywordField, value: string) => {
+    if (field === "title") {
+      updateCategoryRuleFormRow(rowId, { titleKeywords: value });
+      return;
+    }
+    if (field === "description") {
+      updateCategoryRuleFormRow(rowId, { descriptionKeywords: value });
+      return;
+    }
+    if (field === "filename") {
+      updateCategoryRuleFormRow(rowId, { filenameKeywords: value });
+      return;
+    }
+    updateCategoryRuleFormRow(rowId, { bodyKeywords: value });
+  };
+
+  const addTagCategoryRuleFormRow = () => {
+    updateRulesForm((prev) => ({
+      ...prev,
+      tagCategoryRules: [...prev.tagCategoryRules, emptyTagCategoryRuleForm()],
+    }));
+  };
+
+  const removeTagCategoryRuleFormRow = (rowId: string) => {
+    updateRulesForm((prev) => ({
+      ...prev,
+      tagCategoryRules: prev.tagCategoryRules.filter((row) => row.id !== rowId),
+    }));
+  };
+
+  const updateTagCategoryRuleFormRow = (rowId: string, patch: Partial<TagCategoryRuleForm>) => {
+    updateRulesForm((prev) => ({
+      ...prev,
+      tagCategoryRules: prev.tagCategoryRules.map((row) => (row.id === rowId ? { ...row, ...patch } : row)),
+    }));
   };
 
   return (
@@ -726,17 +1003,36 @@ export function RulesWorkspace() {
               </div>
 
               <div className="rounded border border-stone-200 p-3">
-                <div className="mb-2 flex items-center justify-between">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <p className="inline-flex items-center gap-1 text-xs font-semibold text-stone-700">
                     <FileText className="h-3.5 w-3.5 text-accent" />
-                    규칙 JSON 편집 {selectedVersion ? `(v${selectedVersion.version_no})` : ""}
+                    규칙 편집 {selectedVersion ? `(v${selectedVersion.version_no})` : ""}
                   </p>
-                  <button
-                    className="rounded border border-stone-300 px-2 py-1 text-xs hover:bg-stone-50"
-                    onClick={() => setRulesJsonText(JSON.stringify(DEFAULT_RULES, null, 2))}
-                  >
-                    기본 템플릿
-                  </button>
+                  <div className="inline-flex items-center gap-1">
+                    <button
+                      className={`rounded border px-2 py-1 text-xs ${
+                        rulesEditorMode === "form" ? "border-accent bg-accent/10 text-accent" : "border-stone-300 hover:bg-stone-50"
+                      }`}
+                      onClick={() => setRulesEditorMode("form")}
+                    >
+                      폼 편집
+                    </button>
+                    <button
+                      className={`rounded border px-2 py-1 text-xs ${
+                        rulesEditorMode === "json" ? "border-accent bg-accent/10 text-accent" : "border-stone-300 hover:bg-stone-50"
+                      }`}
+                      onClick={() => setRulesEditorMode("json")}
+                    >
+                      <Braces className="mr-1 inline-block h-3.5 w-3.5" />
+                      JSON 고급 편집
+                    </button>
+                    <button
+                      className="rounded border border-stone-300 px-2 py-1 text-xs hover:bg-stone-50"
+                      onClick={resetRulesTemplate}
+                    >
+                      기본 템플릿
+                    </button>
+                  </div>
                 </div>
                 {loadingVersionDetail ? <p className="mb-2 text-sm text-stone-600">버전 로딩 중...</p> : null}
                 {versionDetail ? (
@@ -744,11 +1040,168 @@ export function RulesWorkspace() {
                     체크섬={versionDetail.checksum_sha256} | 배포시각={formatDateTime(versionDetail.published_at)}
                   </p>
                 ) : null}
-                <textarea
-                  className="h-64 w-full rounded border border-stone-300 p-2 font-mono text-xs"
-                  value={rulesJsonText}
-                  onChange={(e) => setRulesJsonText(e.target.value)}
-                />
+
+                {rulesEditorMode === "form" ? (
+                  <div className="space-y-3">
+                    <div className="grid gap-2 rounded border border-stone-200 bg-stone-50 p-2 md:grid-cols-[220px_1fr]">
+                      <p className="text-xs font-semibold text-stone-700">기본 카테고리</p>
+                      <input
+                        className="rounded border border-stone-300 bg-white px-2 py-1 text-sm"
+                        value={rulesForm.defaultCategory}
+                        onChange={(e) =>
+                          updateRulesForm((prev) => ({
+                            ...prev,
+                            defaultCategory: e.target.value,
+                          }))
+                        }
+                        placeholder="기타"
+                      />
+                    </div>
+
+                    <div className="rounded border border-stone-200 bg-stone-50 p-2">
+                      <div className="mb-2 flex items-center justify-between">
+                        <p className="text-xs font-semibold text-stone-700">카테고리 규칙</p>
+                        <button
+                          className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs hover:bg-stone-100"
+                          onClick={addCategoryRuleFormRow}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          규칙 추가
+                        </button>
+                      </div>
+                      {rulesForm.categoryRules.length === 0 ? <p className="text-xs text-stone-600">카테고리 규칙 없음</p> : null}
+                      <div className="space-y-2">
+                        {rulesForm.categoryRules.map((row, idx) => (
+                          <div key={row.id} className="rounded border border-stone-200 bg-white p-2">
+                            <div className="mb-2 flex items-center justify-between">
+                              <p className="text-xs font-semibold text-stone-700">규칙 #{idx + 1}</p>
+                              <button
+                                className="inline-flex items-center gap-1 rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+                                onClick={() => removeCategoryRuleFormRow(row.id)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                삭제
+                              </button>
+                            </div>
+                            <div className="grid gap-2 md:grid-cols-2">
+                              <input
+                                className="rounded border border-stone-300 px-2 py-1 text-sm"
+                                value={row.category}
+                                onChange={(e) => updateCategoryRuleFormRow(row.id, { category: e.target.value })}
+                                placeholder="카테고리명"
+                              />
+                              <input
+                                className="rounded border border-stone-300 px-2 py-1 text-sm"
+                                value={row.tags}
+                                onChange={(e) => updateCategoryRuleFormRow(row.id, { tags: e.target.value })}
+                                placeholder="자동 태그(쉼표/줄바꿈)"
+                              />
+                              <textarea
+                                className="h-20 rounded border border-stone-300 p-2 text-xs"
+                                value={row.titleKeywords}
+                                onChange={(e) => updateCategoryRuleKeyword(row.id, "title", e.target.value)}
+                                placeholder="제목 키워드 (쉼표/줄바꿈)"
+                              />
+                              <textarea
+                                className="h-20 rounded border border-stone-300 p-2 text-xs"
+                                value={row.descriptionKeywords}
+                                onChange={(e) => updateCategoryRuleKeyword(row.id, "description", e.target.value)}
+                                placeholder="설명 키워드 (쉼표/줄바꿈)"
+                              />
+                              <textarea
+                                className="h-20 rounded border border-stone-300 p-2 text-xs"
+                                value={row.filenameKeywords}
+                                onChange={(e) => updateCategoryRuleKeyword(row.id, "filename", e.target.value)}
+                                placeholder="파일명 키워드 (쉼표/줄바꿈)"
+                              />
+                              <textarea
+                                className="h-20 rounded border border-stone-300 p-2 text-xs"
+                                value={row.bodyKeywords}
+                                onChange={(e) => updateCategoryRuleKeyword(row.id, "body", e.target.value)}
+                                placeholder="본문 키워드 (쉼표/줄바꿈)"
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded border border-stone-200 bg-stone-50 p-2">
+                      <div className="mb-2 flex items-center justify-between">
+                        <p className="text-xs font-semibold text-stone-700">태그 기반 카테고리 규칙</p>
+                        <button
+                          className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs hover:bg-stone-100"
+                          onClick={addTagCategoryRuleFormRow}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          규칙 추가
+                        </button>
+                      </div>
+                      {rulesForm.tagCategoryRules.length === 0 ? <p className="text-xs text-stone-600">태그 규칙 없음</p> : null}
+                      <div className="space-y-2">
+                        {rulesForm.tagCategoryRules.map((row, idx) => (
+                          <div key={row.id} className="rounded border border-stone-200 bg-white p-2">
+                            <div className="mb-2 flex items-center justify-between">
+                              <p className="text-xs font-semibold text-stone-700">태그 규칙 #{idx + 1}</p>
+                              <button
+                                className="inline-flex items-center gap-1 rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50"
+                                onClick={() => removeTagCategoryRuleFormRow(row.id)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                삭제
+                              </button>
+                            </div>
+                            <div className="grid gap-2 md:grid-cols-[1fr_140px]">
+                              <input
+                                className="rounded border border-stone-300 px-2 py-1 text-sm"
+                                value={row.category}
+                                onChange={(e) => updateTagCategoryRuleFormRow(row.id, { category: e.target.value })}
+                                placeholder="카테고리명"
+                              />
+                              <select
+                                className="rounded border border-stone-300 px-2 py-1 text-sm"
+                                value={row.match}
+                                onChange={(e) =>
+                                  updateTagCategoryRuleFormRow(row.id, {
+                                    match: e.target.value === "all" ? "all" : "any",
+                                  })
+                                }
+                              >
+                                <option value="any">매칭: any</option>
+                                <option value="all">매칭: all</option>
+                              </select>
+                            </div>
+                            <textarea
+                              className="mt-2 h-20 w-full rounded border border-stone-300 p-2 text-xs"
+                              value={row.tags}
+                              onChange={(e) => updateTagCategoryRuleFormRow(row.id, { tags: e.target.value })}
+                              placeholder="태그 패턴(쉼표/줄바꿈, * 와일드카드 지원)"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-xs text-stone-600">
+                      고급 모드에서는 JSON을 직접 편집할 수 있습니다. 수정 후 아래의 JSON 반영 버튼으로 동기화하세요.
+                    </p>
+                    <textarea
+                      className="h-64 w-full rounded border border-stone-300 p-2 font-mono text-xs"
+                      value={rulesJsonText}
+                      onChange={(e) => setRulesJsonText(e.target.value)}
+                    />
+                    <div className="flex justify-end">
+                      <button
+                        className="rounded border border-stone-300 px-2 py-1 text-xs hover:bg-stone-50"
+                        onClick={applyJsonToForm}
+                      >
+                        JSON을 폼에 반영
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="mt-2 flex justify-end">
                   <button
                     className="rounded bg-accent px-3 py-1 text-sm text-white disabled:opacity-50"

@@ -1,13 +1,14 @@
 "use client";
 
 import { Component, type ReactNode, useState } from "react";
-import { RichContentEditor } from "@/components/editor/RichContentEditor";
+import { RichContentEditor, type RichContentAttachmentLink } from "@/components/editor/RichContentEditor";
 import { RichContentView } from "@/components/editor/RichContentView";
 
 type RichContentEditorProps = {
   value: string;
   onChange: (next: string) => void;
   minHeightClassName?: string;
+  attachmentLinks?: RichContentAttachmentLink[];
 };
 
 class EditorErrorBoundary extends Component<

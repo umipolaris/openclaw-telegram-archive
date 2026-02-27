@@ -10,6 +10,7 @@ import { PageMenuHeading } from "@/components/layout/PageMenuHeading";
 import { reviewStatusLabel } from "@/lib/labels";
 import { SafeRichContentEditor } from "@/components/editor/SafeRichContentEditor";
 import { RichContentView } from "@/components/editor/RichContentView";
+import { DocumentCommentsPanel } from "@/components/documents/DocumentCommentsPanel";
 import { normalizeRichContentHtml } from "@/lib/rich-content";
 
 type ReviewStatus = "NONE" | "NEEDS_REVIEW" | "RESOLVED";
@@ -411,6 +412,14 @@ export default function DocumentDetailPage({ params }: PageProps) {
   };
 
   const viewDescriptionHtml = useMemo(() => normalizeRichContentHtml(detail?.description || ""), [detail?.description]);
+  const detailAttachmentLinks = useMemo(
+    () =>
+      (detail?.files ?? []).map((file) => ({
+        label: file.original_filename,
+        href: fileDownloadUrl(file.download_path, file.id),
+      })),
+    [detail?.files],
+  );
 
   return (
     <section className="space-y-3">
@@ -530,7 +539,12 @@ export default function DocumentDetailPage({ params }: PageProps) {
               {categoryOptionsLoading ? <p className="text-xs text-stone-500">카테고리 목록 로딩 중...</p> : null}
               {categoryOptionsError ? <p className="text-xs text-amber-700">목록 로드 실패: {categoryOptionsError}</p> : null}
 
-              <SafeRichContentEditor value={editDescriptionHtml} onChange={setEditDescriptionHtml} minHeightClassName="min-h-[320px]" />
+              <SafeRichContentEditor
+                value={editDescriptionHtml}
+                onChange={setEditDescriptionHtml}
+                minHeightClassName="min-h-[320px]"
+                attachmentLinks={detailAttachmentLinks}
+              />
               <textarea
                 className="min-h-20 w-full rounded border border-stone-300 px-2 py-1 text-sm"
                 value={editSummary}
@@ -580,6 +594,10 @@ export default function DocumentDetailPage({ params }: PageProps) {
               <RichContentView html={normalizeRichContentHtml(detail.summary)} className="text-sm" />
             </section>
           ) : null}
+
+          <section className="mt-3">
+            <DocumentCommentsPanel documentId={detail.id} />
+          </section>
 
           <section className="mt-3 rounded border border-stone-200 p-3">
             <p className="mb-1 text-sm font-semibold text-stone-800">파일 목록</p>

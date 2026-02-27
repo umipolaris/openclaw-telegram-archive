@@ -23,6 +23,8 @@
 - 중복 방지 저장: SHA256 기반 파일 저장 + 논리 링크
 - 계층형 IA UI: Archive/Timeline/Search/Review Queue/Rules/Admin
 - 아카이브 생산성 UI: 상단 1줄 `간편게시`, `상세게시` 진입, 검색/필터·보기/컬럼설정 접기/펼치기
+- 게시물 코멘트 시스템: 문서별 코멘트 작성/수정/삭제, 작성자 본인 또는 ADMIN만 수정/삭제
+- 리스트 가시성 강화: 아카이브 목록 제목 옆 코멘트 아이콘+개수 배지 표시
 - 운영자 중심 규칙 관리: UI 편집 + JSON import/export + backfill
 - 대용량 대비: Postgres 인덱스/페이지네이션/가상화 리스트
 - 검색 확장: Postgres FTS 기본 + Meilisearch 옵션
@@ -183,6 +185,40 @@ make down
 - `make`가 없으면 `cd infra && ./scripts/compose.sh up -d --build`로 동일 실행 가능합니다.
 - `./scripts/compose.sh`는 `docker compose`와 `docker-compose`를 자동 감지합니다.
 
+## macOS 재부팅 자동 시작
+맥 재부팅(로그인) 후 서비스가 자동 기동되도록 `launchd` 에이전트를 설치할 수 있습니다.
+
+```bash
+cd infra
+chmod +x scripts/autostart-up.sh scripts/install-autostart-macos.sh scripts/uninstall-autostart-macos.sh
+./scripts/install-autostart-macos.sh
+```
+
+기본 동작:
+- Docker daemon 준비 대기 후 `docker compose up -d` 자동 실행
+- 프로필 기본값: `APP_PROFILE=dev`
+- 빌드 없이 기동(필요 시 `AUTO_START_BUILD=true`로 설치)
+- 실패 시 자동 재시도(launchd + 스크립트 내부 retry)
+
+옵션 예시(설치 시 함께 전달 가능):
+```bash
+cd infra
+APP_PROFILE=dev AUTO_START_BUILD=false AUTO_START_MAX_RETRIES=10 AUTO_START_RETRY_INTERVAL=30 ./scripts/install-autostart-macos.sh
+```
+
+상태 확인:
+```bash
+launchctl print gui/$(id -u)/com.umipolaris.docarchive.autostart
+tail -f infra/data/logs/com.umipolaris.docarchive.autostart.out.log
+tail -f infra/data/logs/com.umipolaris.docarchive.autostart.err.log
+```
+
+해제:
+```bash
+cd infra
+./scripts/uninstall-autostart-macos.sh
+```
+
 ## 아카이브 UI 사용 요약 (현재)
 - 페이지 최상단 우측: 한 줄형 `간편게시` 입력(`파일 1개 + 설명 + 간편게시`), 등록 즉시 목록 갱신
 - 게시물 목록 카드 상단: 슬림 툴바
@@ -190,6 +226,18 @@ make down
   - `보기/컬럼설정` 버튼: 컴팩트 보기, 컬럼 표시/순서, 프리셋 패널 토글
   - `상세게시` 버튼: `/manual-post` 상세 입력 화면 이동
 - 목록 행 클릭: 우측 패널이 아닌 `문서 상세 팝업(모달)` 오픈
+- 문서 상세 팝업(`메타 > 보기`): 하단 1줄 코멘트 입력 + 우측 작은 `등록` 버튼
+- 문서 상세/아카이브 상세: 코멘트 목록 조회, 코멘트 수정/삭제(권한 규칙 적용)
+- 아카이브 리스트 제목 셀: 코멘트가 있으면 `말풍선 아이콘 + 개수` 자동 표시
+
+## 최근 반영 사항 (2026-02-27)
+- 간편게시 단일 라인 설명 입력 시 요약 텍스트가 2번 중복되던 문제 수정
+- 코멘트 API 추가:
+  - `GET /api/documents/{id}/comments`
+  - `POST /api/documents/{id}/comments`
+  - `PATCH /api/documents/{id}/comments/{comment_id}`
+  - `DELETE /api/documents/{id}/comments/{comment_id}`
+- 문서 목록 API(`GET /api/documents`)에 `comment_count` 필드 추가
 
 ## 로컬 데이터 저장 위치
 Docker Compose는 운영 데이터(파일/DB/캐시/검색인덱스)를 `infra/data` 아래에 저장합니다.

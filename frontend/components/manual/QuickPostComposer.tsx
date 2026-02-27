@@ -58,8 +58,8 @@ function buildCaptionFromSimpleNote(note: string): string | null {
     .filter((line) => line.length > 0);
   if (lines.length === 0) return null;
   if (lines.length === 1) {
-    // 설명 1줄만 입력해도 제목이 파일명이 아니라 설명 기반으로 생성되도록 처리
-    return `${lines[0]}\n${lines[0]}`;
+    // 1줄 입력은 제목으로만 사용한다. (중복 요약 방지)
+    return lines[0];
   }
   return lines.join("\n");
 }

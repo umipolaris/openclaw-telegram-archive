@@ -14,6 +14,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   Tags,
 } from "lucide-react";
 import { apiGet } from "@/lib/api-client";
@@ -78,6 +79,7 @@ type NodeVisual = {
   labelFontSize: number;
   metaFontSize: number;
   active?: boolean;
+  opacity?: number;
   onClick?: () => void;
 };
 
@@ -98,17 +100,31 @@ type Weighted = {
   metaFont: number;
 };
 
+type MindMapOptionPrefs = {
+  layout_scale: number;
+  category_limit: number;
+  tag_limit: number;
+  document_limit: number;
+};
+
 const PAGE_SIZE = 20;
 const VIEWBOX_WIDTH = 1240;
 const VIEWBOX_HEIGHT = 760;
 const CENTER: Point = { x: VIEWBOX_WIDTH / 2, y: VIEWBOX_HEIGHT / 2 };
 const UNTAGGED_LABEL = "(태그없음)";
-const CATEGORY_MAX = 12;
-const TAG_MAX = 10;
-const DOC_MAX = 8;
+const CATEGORY_MAX_DEFAULT = 12;
+const TAG_MAX_DEFAULT = 10;
+const DOC_MAX_DEFAULT = 8;
+const CATEGORY_MAX_LIMIT = 30;
+const TAG_MAX_LIMIT = 30;
+const DOC_MAX_LIMIT = 30;
+const MINDMAP_OPTIONS_STORAGE_KEY = "mindmap_options_v1";
 const ZOOM_MIN = 0.6;
 const ZOOM_MAX = 2.0;
 const ZOOM_STEP = 0.15;
+const LAYOUT_SCALE_MIN = 0.7;
+const LAYOUT_SCALE_MAX = 1.7;
+const LAYOUT_SCALE_STEP = 0.05;
 const COLLISION_PADDING = 18;
 const RING_STEP = 30;
 const MAX_RINGS = 10;
@@ -223,17 +239,24 @@ function clampPoint(point: Point, rx: number, ry: number): Point {
   };
 }
 
-function placeCandidates(candidates: LayoutCandidate[], occupiedSeed: EllipseBounds[]): Map<string, Point> {
+function placeCandidatesWithConfig(
+  candidates: LayoutCandidate[],
+  occupiedSeed: EllipseBounds[],
+  config: { collisionPadding?: number; ringStep?: number; maxRings?: number },
+): Map<string, Point> {
   const positions = new Map<string, Point>();
   const occupied: EllipseBounds[] = [...occupiedSeed];
+  const collisionPadding = config.collisionPadding ?? COLLISION_PADDING;
+  const ringStep = config.ringStep ?? RING_STEP;
+  const maxRings = config.maxRings ?? MAX_RINGS;
 
   for (const candidate of candidates) {
     let placedPoint: Point | null = null;
     let bestPoint: Point | null = null;
     let bestOverlap = Number.POSITIVE_INFINITY;
 
-    for (let ring = 0; ring < MAX_RINGS; ring += 1) {
-      const radius = candidate.baseRadius + ring * RING_STEP;
+    for (let ring = 0; ring < maxRings; ring += 1) {
+      const radius = candidate.baseRadius + ring * ringStep;
       for (const offset of ANGLE_OFFSETS) {
         const point = clampPoint(
           polarPoint(candidate.anchor, radius, candidate.baseAngle + offset),
@@ -241,7 +264,7 @@ function placeCandidates(candidates: LayoutCandidate[], occupiedSeed: EllipseBou
           candidate.ry,
         );
         const current: EllipseBounds = { x: point.x, y: point.y, rx: candidate.rx, ry: candidate.ry };
-        const overlapCount = occupied.reduce((sum, node) => (overlaps(current, node) ? sum + 1 : sum), 0);
+        const overlapCount = occupied.reduce((sum, node) => (overlaps(current, node, collisionPadding) ? sum + 1 : sum), 0);
 
         if (overlapCount === 0) {
           placedPoint = point;
@@ -295,6 +318,39 @@ function prioritizeSelected<T>(items: T[], selected: string | null, max: number,
   return [picked, ...rest];
 }
 
+function loadMindMapOptionPrefs(): MindMapOptionPrefs | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(MINDMAP_OPTIONS_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<MindMapOptionPrefs>;
+    const layoutScale =
+      typeof parsed.layout_scale === "number"
+        ? clamp(parsed.layout_scale, LAYOUT_SCALE_MIN, LAYOUT_SCALE_MAX)
+        : 1;
+    const categoryLimit =
+      typeof parsed.category_limit === "number"
+        ? Math.round(clamp(parsed.category_limit, 4, CATEGORY_MAX_LIMIT))
+        : CATEGORY_MAX_DEFAULT;
+    const tagLimit =
+      typeof parsed.tag_limit === "number"
+        ? Math.round(clamp(parsed.tag_limit, 3, TAG_MAX_LIMIT))
+        : TAG_MAX_DEFAULT;
+    const documentLimit =
+      typeof parsed.document_limit === "number"
+        ? Math.round(clamp(parsed.document_limit, 2, DOC_MAX_LIMIT))
+        : DOC_MAX_DEFAULT;
+    return {
+      layout_scale: layoutScale,
+      category_limit: categoryLimit,
+      tag_limit: tagLimit,
+      document_limit: documentLimit,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function MindNode({
   label,
   meta,
@@ -308,6 +364,7 @@ function MindNode({
   labelFontSize,
   metaFontSize,
   active = false,
+  opacity = 1,
   onClick,
 }: NodeVisual) {
   const charsPerLine = clamp(Math.floor(rx / 7) + 5, 8, 13);
@@ -332,6 +389,7 @@ function MindNode({
       role={onClick ? "button" : undefined}
       tabIndex={onClick ? 0 : -1}
       className={onClick ? "cursor-pointer transition-all duration-200 hover:opacity-95" : undefined}
+      style={{ opacity }}
     >
       <title>{label}</title>
       <ellipse
@@ -380,6 +438,12 @@ export function MindMapWorkspace() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [layoutScale, setLayoutScale] = useState(1);
+  const [categoryNodeLimit, setCategoryNodeLimit] = useState(CATEGORY_MAX_DEFAULT);
+  const [tagNodeLimit, setTagNodeLimit] = useState(TAG_MAX_DEFAULT);
+  const [documentNodeLimit, setDocumentNodeLimit] = useState(DOC_MAX_DEFAULT);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [optionPrefsLoaded, setOptionPrefsLoaded] = useState(false);
 
   const loadTree = useCallback(async () => {
     setLoading(true);
@@ -407,12 +471,26 @@ export function MindMapWorkspace() {
   }, [loadTree]);
 
   useEffect(() => {
-    if (!selectedCategory && data.categories.length > 0) {
-      setSelectedCategory(data.categories[0].category);
-      setSelectedTag(null);
-      setPage(1);
+    const prefs = loadMindMapOptionPrefs();
+    if (prefs) {
+      setLayoutScale(prefs.layout_scale);
+      setCategoryNodeLimit(prefs.category_limit);
+      setTagNodeLimit(prefs.tag_limit);
+      setDocumentNodeLimit(prefs.document_limit);
     }
-  }, [data.categories, selectedCategory]);
+    setOptionPrefsLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!optionPrefsLoaded || typeof window === "undefined") return;
+    const payload: MindMapOptionPrefs = {
+      layout_scale: layoutScale,
+      category_limit: categoryNodeLimit,
+      tag_limit: tagNodeLimit,
+      document_limit: documentNodeLimit,
+    };
+    window.localStorage.setItem(MINDMAP_OPTIONS_STORAGE_KEY, JSON.stringify(payload));
+  }, [optionPrefsLoaded, layoutScale, categoryNodeLimit, tagNodeLimit, documentNodeLimit]);
 
   useEffect(() => {
     if (selectedTag && !data.tags.some((row) => row.tag === selectedTag)) {
@@ -421,16 +499,29 @@ export function MindMapWorkspace() {
     }
   }, [data.tags, selectedTag]);
 
-  const effectiveCategory = selectedCategory ?? data.selected_category;
-  const effectiveTag = selectedTag ?? data.selected_tag;
+  const effectiveCategory = selectedCategory;
+  const effectiveTag = selectedTag;
   const totalPages = useMemo(() => Math.max(1, Math.ceil((data.total_documents || 0) / PAGE_SIZE)), [data.total_documents]);
+  const layoutCollisionPadding = useMemo(() => Math.max(8, Math.round(COLLISION_PADDING * layoutScale)), [layoutScale]);
+  const layoutRingStep = useMemo(() => Math.max(16, Math.round(RING_STEP * layoutScale)), [layoutScale]);
+  const categoryBaseRadius = useMemo(() => Math.round(250 * layoutScale), [layoutScale]);
+  const tagBaseRadius = useMemo(() => Math.round(210 * layoutScale), [layoutScale]);
+  const docBaseRadius = useMemo(() => Math.round(185 * layoutScale), [layoutScale]);
+  const orbitInnerRadius = useMemo(() => Math.round(255 * layoutScale), [layoutScale]);
+  const orbitOuterRadius = useMemo(() => Math.round(370 * layoutScale), [layoutScale]);
 
   const mapCategories = useMemo(
-    () => prioritizeSelected(data.categories, effectiveCategory, CATEGORY_MAX, (row) => row.category),
-    [data.categories, effectiveCategory],
+    () => prioritizeSelected(data.categories, effectiveCategory, categoryNodeLimit, (row) => row.category),
+    [data.categories, effectiveCategory, categoryNodeLimit],
   );
-  const mapTags = useMemo(() => prioritizeSelected(data.tags, effectiveTag, TAG_MAX, (row) => row.tag), [data.tags, effectiveTag]);
-  const mapDocuments = useMemo(() => data.documents.slice(0, DOC_MAX), [data.documents]);
+  const mapTags = useMemo(
+    () => (effectiveCategory ? prioritizeSelected(data.tags, effectiveTag, tagNodeLimit, (row) => row.tag) : []),
+    [data.tags, effectiveCategory, effectiveTag, tagNodeLimit],
+  );
+  const mapDocuments = useMemo(
+    () => (effectiveTag ? data.documents.slice(0, documentNodeLimit) : []),
+    [data.documents, documentNodeLimit, effectiveTag],
+  );
 
   const categoryVisualMap = useMemo(() => {
     const weights = normalizeSeries(mapCategories.map((row) => row.document_count));
@@ -460,18 +551,22 @@ export function MindMapWorkspace() {
           id: row.category,
           anchor: CENTER,
           baseAngle: categoryAngles[idx],
-          baseRadius: 250,
+          baseRadius: categoryBaseRadius,
           rx: visual?.rx ?? 84,
           ry: visual?.ry ?? 46,
         };
       }),
-    [categoryAngles, categoryVisualMap, mapCategories],
+    [categoryAngles, categoryBaseRadius, categoryVisualMap, mapCategories],
   );
 
   const centerEllipse = useMemo<EllipseBounds>(() => ({ x: CENTER.x, y: CENTER.y, rx: 120, ry: 72 }), []);
   const categoryPointMap = useMemo(
-    () => placeCandidates(categoryCandidates, [centerEllipse]),
-    [categoryCandidates, centerEllipse],
+    () =>
+      placeCandidatesWithConfig(categoryCandidates, [centerEllipse], {
+        collisionPadding: layoutCollisionPadding,
+        ringStep: layoutRingStep,
+      }),
+    [categoryCandidates, centerEllipse, layoutCollisionPadding, layoutRingStep],
   );
 
   const categoryNodeMap = useMemo(() => {
@@ -480,6 +575,7 @@ export function MindMapWorkspace() {
       const pt = categoryPointMap.get(row.category);
       const visual = categoryVisualMap.get(row.category);
       if (!pt || !visual) return;
+      const muted = Boolean(effectiveCategory) && effectiveCategory !== row.category;
       map.set(row.category, {
         id: row.category,
         label: row.category,
@@ -488,12 +584,13 @@ export function MindMapWorkspace() {
         y: pt.y,
         rx: visual.rx,
         ry: visual.ry,
-        fill: effectiveCategory === row.category ? "#dbeafe" : "#eef4ff",
-        stroke: effectiveCategory === row.category ? "#2563eb" : "#8aa3c2",
+        fill: muted ? "#f3f4f6" : effectiveCategory === row.category ? "#dbeafe" : "#eef4ff",
+        stroke: muted ? "#9ca3af" : effectiveCategory === row.category ? "#2563eb" : "#8aa3c2",
         strokeWidth: 2,
         labelFontSize: visual.labelFont,
         metaFontSize: visual.metaFont,
         active: effectiveCategory === row.category,
+        opacity: muted ? 0.3 : 1,
         onClick: () => {
           setSelectedCategory(row.category);
           setSelectedTag(null);
@@ -536,12 +633,12 @@ export function MindMapWorkspace() {
         id: row.tag,
         anchor: selectedCategoryPoint,
         baseAngle: angles[idx],
-        baseRadius: 210,
+        baseRadius: tagBaseRadius,
         rx: visual?.rx ?? 78,
         ry: visual?.ry ?? 42,
       };
     });
-  }, [selectedCategoryPoint, mapTags, tagVisualMap]);
+  }, [selectedCategoryPoint, mapTags, tagVisualMap, tagBaseRadius]);
 
   const occupiedFromCategories = useMemo<EllipseBounds[]>(() => {
     const list: EllipseBounds[] = [centerEllipse];
@@ -553,8 +650,12 @@ export function MindMapWorkspace() {
   }, [categoryNodeMap, mapCategories, centerEllipse]);
 
   const tagPointMap = useMemo(
-    () => placeCandidates(tagCandidates, occupiedFromCategories),
-    [occupiedFromCategories, tagCandidates],
+    () =>
+      placeCandidatesWithConfig(tagCandidates, occupiedFromCategories, {
+        collisionPadding: layoutCollisionPadding,
+        ringStep: layoutRingStep,
+      }),
+    [occupiedFromCategories, tagCandidates, layoutCollisionPadding, layoutRingStep],
   );
 
   const tagNodeMap = useMemo(() => {
@@ -563,6 +664,7 @@ export function MindMapWorkspace() {
       const pt = tagPointMap.get(row.tag);
       const visual = tagVisualMap.get(row.tag);
       if (!pt || !visual) return;
+      const muted = Boolean(effectiveTag) && effectiveTag !== row.tag;
       map.set(row.tag, {
         id: row.tag,
         label: row.tag === UNTAGGED_LABEL ? "태그없음" : row.tag,
@@ -571,12 +673,13 @@ export function MindMapWorkspace() {
         y: pt.y,
         rx: visual.rx,
         ry: visual.ry,
-        fill: effectiveTag === row.tag ? "#cffafe" : "#ecfeff",
-        stroke: effectiveTag === row.tag ? "#0284c7" : "#7cb5d8",
+        fill: muted ? "#f3f4f6" : effectiveTag === row.tag ? "#cffafe" : "#ecfeff",
+        stroke: muted ? "#9ca3af" : effectiveTag === row.tag ? "#0284c7" : "#7cb5d8",
         strokeWidth: 1.9,
         labelFontSize: visual.labelFont,
         metaFontSize: visual.metaFont,
         active: effectiveTag === row.tag,
+        opacity: muted ? 0.3 : 1,
         onClick: () => {
           setSelectedTag(row.tag);
           setPage(1);
@@ -618,12 +721,12 @@ export function MindMapWorkspace() {
         id: row.id,
         anchor: selectedTagPoint,
         baseAngle: angles[idx],
-        baseRadius: 185,
+        baseRadius: docBaseRadius,
         rx: visual?.rx ?? 82,
         ry: visual?.ry ?? 40,
       };
     });
-  }, [selectedCategoryPoint, selectedTagPoint, mapDocuments, docVisualMap]);
+  }, [selectedCategoryPoint, selectedTagPoint, mapDocuments, docVisualMap, docBaseRadius]);
 
   const occupiedFromTag = useMemo<EllipseBounds[]>(() => {
     const list: EllipseBounds[] = [centerEllipse];
@@ -639,8 +742,12 @@ export function MindMapWorkspace() {
   }, [categoryNodeMap, mapCategories, mapTags, tagNodeMap, centerEllipse]);
 
   const docPointMap = useMemo(
-    () => placeCandidates(docCandidates, occupiedFromTag),
-    [docCandidates, occupiedFromTag],
+    () =>
+      placeCandidatesWithConfig(docCandidates, occupiedFromTag, {
+        collisionPadding: layoutCollisionPadding,
+        ringStep: layoutRingStep,
+      }),
+    [docCandidates, occupiedFromTag, layoutCollisionPadding, layoutRingStep],
   );
 
   const docNodeMap = useMemo(() => {
@@ -669,8 +776,8 @@ export function MindMapWorkspace() {
   }, [docPointMap, docVisualMap, mapDocuments, router]);
 
   const hiddenCategoryCount = Math.max(0, data.categories.length - mapCategories.length);
-  const hiddenTagCount = Math.max(0, data.tags.length - mapTags.length);
-  const hiddenDocumentCount = Math.max(0, data.documents.length - mapDocuments.length);
+  const hiddenTagCount = effectiveCategory ? Math.max(0, data.tags.length - mapTags.length) : 0;
+  const hiddenDocumentCount = effectiveTag ? Math.max(0, data.documents.length - mapDocuments.length) : 0;
 
   return (
     <section className="space-y-4">
@@ -725,6 +832,10 @@ export function MindMapWorkspace() {
               setSelectedTag(null);
               setPage(1);
               setZoomLevel(1);
+              setLayoutScale(1);
+              setCategoryNodeLimit(CATEGORY_MAX_DEFAULT);
+              setTagNodeLimit(TAG_MAX_DEFAULT);
+              setDocumentNodeLimit(DOC_MAX_DEFAULT);
             }}
           >
             <RotateCcw className="h-3.5 w-3.5" />
@@ -741,6 +852,19 @@ export function MindMapWorkspace() {
         <div className="mb-2 flex items-center justify-between">
           <p className="text-sm font-semibold text-slate-800">연관관계 마인드맵</p>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-semibold transition ${
+                optionsOpen
+                  ? "border-sky-400 bg-sky-50 text-sky-700"
+                  : "border-slate-300 bg-white/90 text-slate-700 hover:bg-slate-100"
+              }`}
+              onClick={() => setOptionsOpen((prev) => !prev)}
+              title="마인드맵 옵션"
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              옵션
+            </button>
             <div className="inline-flex items-center rounded-full border border-slate-300 bg-white/90 p-1 shadow-sm">
               <button
                 type="button"
@@ -769,6 +893,70 @@ export function MindMapWorkspace() {
             </span>
           </div>
         </div>
+        {optionsOpen ? (
+          <div className="mb-3 grid gap-2 rounded-xl border border-sky-100 bg-white/85 p-3 md:grid-cols-2">
+            <label className="space-y-1">
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
+                <span>공간 확장</span>
+                <span>{Math.round(layoutScale * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min={Math.round(LAYOUT_SCALE_MIN * 100)}
+                max={Math.round(LAYOUT_SCALE_MAX * 100)}
+                step={Math.round(LAYOUT_SCALE_STEP * 100)}
+                value={Math.round(layoutScale * 100)}
+                onChange={(event) => setLayoutScale(Number(event.target.value) / 100)}
+                className="w-full accent-sky-600"
+              />
+            </label>
+            <label className="space-y-1">
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
+                <span>카테고리 말풍선 수</span>
+                <span>{categoryNodeLimit}</span>
+              </div>
+              <input
+                type="range"
+                min={4}
+                max={CATEGORY_MAX_LIMIT}
+                step={1}
+                value={categoryNodeLimit}
+                onChange={(event) => setCategoryNodeLimit(Number(event.target.value))}
+                className="w-full accent-indigo-600"
+              />
+            </label>
+            <label className="space-y-1">
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
+                <span>태그 말풍선 수</span>
+                <span>{tagNodeLimit}</span>
+              </div>
+              <input
+                type="range"
+                min={3}
+                max={TAG_MAX_LIMIT}
+                step={1}
+                value={tagNodeLimit}
+                onChange={(event) => setTagNodeLimit(Number(event.target.value))}
+                className="w-full accent-cyan-600"
+              />
+            </label>
+            <label className="space-y-1">
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-700">
+                <span>문서 말풍선 수</span>
+                <span>{documentNodeLimit}</span>
+              </div>
+              <input
+                type="range"
+                min={2}
+                max={DOC_MAX_LIMIT}
+                step={1}
+                value={documentNodeLimit}
+                onChange={(event) => setDocumentNodeLimit(Number(event.target.value))}
+                className="w-full accent-violet-600"
+              />
+            </label>
+          </div>
+        ) : null}
         <div className="overflow-x-auto rounded-2xl border border-sky-100 bg-white/80 shadow-inner">
           <svg viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`} className="h-[660px] w-full min-w-[980px]">
             <defs>
@@ -805,12 +993,13 @@ export function MindMapWorkspace() {
             </defs>
             <g transform={`translate(${CENTER.x} ${CENTER.y}) scale(${zoomLevel}) translate(${-CENTER.x} ${-CENTER.y})`}>
               <rect x={0} y={0} width={VIEWBOX_WIDTH} height={VIEWBOX_HEIGHT} fill="url(#map-bg-radial)" />
-              <circle cx={CENTER.x} cy={CENTER.y} r={255} fill="none" stroke="#deebfb" strokeDasharray="3 7" />
-              <circle cx={CENTER.x} cy={CENTER.y} r={370} fill="none" stroke="#edf4fd" strokeDasharray="2 9" />
+              <circle cx={CENTER.x} cy={CENTER.y} r={orbitInnerRadius} fill="none" stroke="#deebfb" strokeDasharray="3 7" />
+              <circle cx={CENTER.x} cy={CENTER.y} r={orbitOuterRadius} fill="none" stroke="#edf4fd" strokeDasharray="2 9" />
 
               {mapCategories.map((row) => {
                 const node = categoryNodeMap.get(row.category);
                 if (!node) return null;
+                const muted = Boolean(effectiveCategory) && effectiveCategory !== row.category;
                 const start = ellipseBoundaryPoint(CENTER, { x: node.x, y: node.y }, centerEllipse.rx, centerEllipse.ry);
                 const end = ellipseBoundaryPoint({ x: node.x, y: node.y }, CENTER, node.rx, node.ry);
                 return (
@@ -820,7 +1009,7 @@ export function MindMapWorkspace() {
                     fill="none"
                     stroke="url(#edge-cat-grad)"
                     strokeWidth={effectiveCategory === row.category ? 2.8 : 1.9}
-                    strokeOpacity={0.9}
+                    strokeOpacity={muted ? 0.2 : 0.9}
                     markerEnd="url(#mind-arrow)"
                     filter="url(#edge-glow)"
                   />
@@ -831,6 +1020,7 @@ export function MindMapWorkspace() {
                 ? mapTags.map((row) => {
                     const node = tagNodeMap.get(row.tag);
                     if (!node) return null;
+                    const muted = Boolean(effectiveTag) && effectiveTag !== row.tag;
                     const from = { x: selectedCategoryNode.x, y: selectedCategoryNode.y };
                     const start = ellipseBoundaryPoint(from, { x: node.x, y: node.y }, selectedCategoryNode.rx, selectedCategoryNode.ry);
                     const end = ellipseBoundaryPoint({ x: node.x, y: node.y }, from, node.rx, node.ry);
@@ -841,7 +1031,7 @@ export function MindMapWorkspace() {
                         fill="none"
                         stroke="url(#edge-tag-grad)"
                         strokeWidth={effectiveTag === row.tag ? 2.5 : 1.8}
-                        strokeOpacity={0.92}
+                        strokeOpacity={muted ? 0.24 : 0.92}
                         markerEnd="url(#mind-arrow)"
                         filter="url(#edge-glow)"
                       />
@@ -971,25 +1161,29 @@ export function MindMapWorkspace() {
               </button>
             ))}
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            {data.tags.map((row) => (
-              <button
-                key={`quick-tag-${row.tag}`}
-                className={`rounded-full border px-2.5 py-1 text-xs font-medium transition ${
-                  effectiveTag === row.tag
-                    ? "border-cyan-400 bg-cyan-50 text-cyan-700"
-                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
-                }`}
-                type="button"
-                onClick={() => {
-                  setSelectedTag(row.tag);
-                  setPage(1);
-                }}
-              >
-                {row.tag === UNTAGGED_LABEL ? "태그없음" : row.tag}
-              </button>
-            ))}
-          </div>
+          {effectiveCategory ? (
+            <div className="flex flex-wrap gap-1.5">
+              {data.tags.map((row) => (
+                <button
+                  key={`quick-tag-${row.tag}`}
+                  className={`rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                    effectiveTag === row.tag
+                      ? "border-cyan-400 bg-cyan-50 text-cyan-700"
+                      : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                  }`}
+                  type="button"
+                  onClick={() => {
+                    setSelectedTag(row.tag);
+                    setPage(1);
+                  }}
+                >
+                  {row.tag === UNTAGGED_LABEL ? "태그없음" : row.tag}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500">카테고리를 선택하면 태그 하위 항목이 표시됩니다.</p>
+          )}
         </div>
       </article>
 

@@ -235,6 +235,17 @@ class DocumentTag(Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
 
 
+class DocumentComment(Base):
+    __tablename__ = "document_comments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+
+
 class IngestJob(Base):
     __tablename__ = "ingest_jobs"
 
@@ -312,6 +323,7 @@ class SavedFilter(Base):
 Index("idx_documents_event_date_desc", Document.event_date.desc())
 Index("idx_documents_category_event_date", Document.category_id, Document.event_date.desc())
 Index("idx_documents_search_vector_gin", Document.search_vector, postgresql_using="gin")
+Index("idx_document_comments_document_created", DocumentComment.document_id, DocumentComment.created_at.desc())
 Index(
     "uq_documents_source_ref_telegram",
     Document.source_ref,

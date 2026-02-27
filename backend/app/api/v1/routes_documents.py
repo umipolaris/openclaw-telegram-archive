@@ -23,6 +23,7 @@ from app.db.models import (
     AuditLog,
     Category,
     Document,
+    DocumentComment,
     DocumentFile,
     DocumentTag,
     DocumentVersion,
@@ -37,6 +38,11 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.schemas.document import (
+    DocumentCommentCreateRequest,
+    DocumentCommentDeleteResponse,
+    DocumentCommentItem,
+    DocumentCommentListResponse,
+    DocumentCommentUpdateRequest,
     DocumentDeleteResponse,
     DocumentDetailResponse,
     DocumentHistoryItem,
@@ -257,6 +263,17 @@ def _get_document_file_previews(
     return counts, previews
 
 
+def _get_document_comment_counts(db: Session, document_ids: list[UUID]) -> dict[UUID, int]:
+    if not document_ids:
+        return {}
+    rows = db.execute(
+        select(DocumentComment.document_id, func.count(DocumentComment.id))
+        .where(DocumentComment.document_id.in_(document_ids))
+        .group_by(DocumentComment.document_id)
+    ).all()
+    return {document_id: int(comment_count) for document_id, comment_count in rows}
+
+
 def _get_document_tags_map(db: Session, document_ids: list[UUID]) -> dict[UUID, list[str]]:
     if not document_ids:
         return {}
@@ -290,6 +307,56 @@ def _get_document_versions(db: Session, document_id: UUID) -> list[DocumentVersi
             event_date=row.event_date,
         )
         for row in rows
+    ]
+
+
+def _normalize_comment_content(content: str | None) -> str:
+    normalized = (content or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="content is required")
+    if len(normalized) > 2000:
+        raise HTTPException(status_code=400, detail="content must be <= 2000 chars")
+    return normalized
+
+
+def _to_document_comment_item(
+    row: DocumentComment,
+    *,
+    actor_username: str | None,
+    current_user: CurrentUser,
+) -> DocumentCommentItem:
+    is_owner = row.created_by == current_user.id if row.created_by else False
+    can_manage = bool(is_owner or current_user.role == UserRole.ADMIN)
+    is_edited = row.updated_at > row.created_at if row.updated_at and row.created_at else False
+    return DocumentCommentItem(
+        id=row.id,
+        document_id=row.document_id,
+        content=row.content,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        created_by=row.created_by,
+        created_by_username=actor_username,
+        is_edited=is_edited,
+        can_edit=can_manage,
+        can_delete=can_manage,
+    )
+
+
+def _get_document_comments(
+    db: Session,
+    *,
+    document_id: UUID,
+    current_user: CurrentUser,
+) -> list[DocumentCommentItem]:
+    rows = db.execute(
+        select(DocumentComment, User.username.label("actor_username"))
+        .outerjoin(User, User.id == DocumentComment.created_by)
+        .where(DocumentComment.document_id == document_id)
+        .order_by(DocumentComment.created_at.asc(), DocumentComment.id.asc())
+    ).all()
+    return [
+        _to_document_comment_item(comment, actor_username=actor_username, current_user=current_user)
+        for comment, actor_username in rows
     ]
 
 
@@ -632,6 +699,7 @@ def list_documents(
 
             loaded_doc_ids = [doc.id for doc in docs]
             file_counts, file_previews = _get_document_file_previews(db, loaded_doc_ids)
+            comment_counts = _get_document_comment_counts(db, loaded_doc_ids)
             tags_map = _get_document_tags_map(db, loaded_doc_ids)
             last_modified_map = _get_document_last_modified_map(db, loaded_doc_ids)
 
@@ -650,6 +718,7 @@ def list_documents(
                         last_modified_at=last_modified_map.get(doc.id, doc.updated_at or doc.created_at or doc.ingested_at),
                         tags=tags_map.get(doc.id, []),
                         file_count=file_counts.get(doc.id, 0),
+                        comment_count=comment_counts.get(doc.id, 0),
                         files=file_previews.get(doc.id, []),
                         review_status=doc.review_status,
                         review_reasons=list(doc.review_reasons or []),
@@ -710,6 +779,7 @@ def list_documents(
     category_names = {row[0].id: row.category_name for row in rows}
     doc_ids = [doc.id for doc in docs]
     file_counts, file_previews = _get_document_file_previews(db, doc_ids)
+    comment_counts = _get_document_comment_counts(db, doc_ids)
     tags_map = _get_document_tags_map(db, doc_ids)
     last_modified_map = _get_document_last_modified_map(db, doc_ids)
 
@@ -728,6 +798,7 @@ def list_documents(
                 last_modified_at=last_modified_map.get(doc.id, doc.updated_at or doc.created_at or doc.ingested_at),
                 tags=tags_map.get(doc.id, []),
                 file_count=file_counts.get(doc.id, 0),
+                comment_count=comment_counts.get(doc.id, 0),
                 files=file_previews.get(doc.id, []),
                 review_status=doc.review_status,
                 review_reasons=list(doc.review_reasons or []),
@@ -884,6 +955,165 @@ def get_document(
         raise HTTPException(status_code=404, detail="document not found")
 
     return _to_document_detail_response(db, doc)
+
+
+@router.get("/documents/{id}/comments", response_model=DocumentCommentListResponse)
+def list_document_comments(
+    id: UUID,
+    current_user: CurrentUser = Depends(require_roles(UserRole.VIEWER, UserRole.REVIEWER, UserRole.EDITOR, UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+) -> DocumentCommentListResponse:
+    doc = db.get(Document, id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+    return DocumentCommentListResponse(
+        items=_get_document_comments(db, document_id=doc.id, current_user=current_user)
+    )
+
+
+@router.post("/documents/{id}/comments", response_model=DocumentCommentItem, status_code=status.HTTP_201_CREATED)
+def create_document_comment(
+    id: UUID,
+    req: DocumentCommentCreateRequest,
+    current_user: CurrentUser = Depends(require_roles(UserRole.VIEWER, UserRole.REVIEWER, UserRole.EDITOR, UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+) -> DocumentCommentItem:
+    doc = db.get(Document, id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+
+    content = _normalize_comment_content(req.content)
+    comment = DocumentComment(
+        document_id=doc.id,
+        content=content,
+        created_by=current_user.id,
+    )
+    db.add(comment)
+    db.flush()
+    db.add(
+        AuditLog(
+            actor_user_id=current_user.id,
+            action="DOCUMENT_COMMENT_CREATE",
+            target_type="document_comment",
+            target_id=comment.id,
+            after_json={
+                "document_id": str(doc.id),
+                "content": comment.content,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(comment)
+    return _to_document_comment_item(comment, actor_username=current_user.username, current_user=current_user)
+
+
+@router.patch("/documents/{id}/comments/{comment_id}", response_model=DocumentCommentItem)
+def patch_document_comment(
+    id: UUID,
+    comment_id: UUID,
+    req: DocumentCommentUpdateRequest,
+    current_user: CurrentUser = Depends(require_roles(UserRole.VIEWER, UserRole.REVIEWER, UserRole.EDITOR, UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+) -> DocumentCommentItem:
+    doc = db.get(Document, id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+
+    comment = db.execute(
+        select(DocumentComment).where(
+            and_(
+                DocumentComment.id == comment_id,
+                DocumentComment.document_id == doc.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        raise HTTPException(status_code=404, detail="comment not found")
+
+    is_owner = comment.created_by == current_user.id if comment.created_by else False
+    if not is_owner and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    content = _normalize_comment_content(req.content)
+    before_content = comment.content
+    comment.content = content
+    comment.updated_at = _now()
+    db.add(comment)
+    db.flush()
+    db.add(
+        AuditLog(
+            actor_user_id=current_user.id,
+            action="DOCUMENT_COMMENT_UPDATE",
+            target_type="document_comment",
+            target_id=comment.id,
+            before_json={
+                "document_id": str(doc.id),
+                "content": before_content,
+            },
+            after_json={
+                "document_id": str(doc.id),
+                "content": comment.content,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(comment)
+    actor_name = (
+        db.execute(select(User.username).where(User.id == comment.created_by)).scalar_one_or_none()
+        if comment.created_by
+        else None
+    )
+    return _to_document_comment_item(comment, actor_username=actor_name, current_user=current_user)
+
+
+@router.delete("/documents/{id}/comments/{comment_id}", response_model=DocumentCommentDeleteResponse)
+def delete_document_comment(
+    id: UUID,
+    comment_id: UUID,
+    current_user: CurrentUser = Depends(require_roles(UserRole.VIEWER, UserRole.REVIEWER, UserRole.EDITOR, UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+) -> DocumentCommentDeleteResponse:
+    doc = db.get(Document, id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+
+    comment = db.execute(
+        select(DocumentComment).where(
+            and_(
+                DocumentComment.id == comment_id,
+                DocumentComment.document_id == doc.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not comment:
+        raise HTTPException(status_code=404, detail="comment not found")
+
+    is_owner = comment.created_by == current_user.id if comment.created_by else False
+    if not is_owner and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    before_json = {
+        "document_id": str(doc.id),
+        "content": comment.content,
+        "created_by": str(comment.created_by) if comment.created_by else None,
+    }
+    db.delete(comment)
+    db.flush()
+    db.add(
+        AuditLog(
+            actor_user_id=current_user.id,
+            action="DOCUMENT_COMMENT_DELETE",
+            target_type="document_comment",
+            target_id=comment_id,
+            before_json=before_json,
+        )
+    )
+    db.commit()
+    return DocumentCommentDeleteResponse(
+        status="deleted",
+        document_id=doc.id,
+        comment_id=comment_id,
+    )
 
 
 @router.get("/documents/{id}/history", response_model=DocumentHistoryResponse)

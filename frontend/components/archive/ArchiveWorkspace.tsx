@@ -11,6 +11,7 @@ import { ModalShell } from "@/components/common/ModalShell";
 import { StatusBadge, type StatusTone } from "@/components/common/StatusBadge";
 import { SafeRichContentEditor } from "@/components/editor/SafeRichContentEditor";
 import { RichContentView } from "@/components/editor/RichContentView";
+import { DocumentCommentsPanel } from "@/components/documents/DocumentCommentsPanel";
 import {
   CalendarDays,
   Eye,
@@ -33,6 +34,7 @@ import {
   Files,
   History,
   List,
+  MessageSquare,
   SlidersHorizontal,
   ArrowUp,
   ArrowDown,
@@ -97,6 +99,7 @@ type DocumentListItem = {
   last_modified_at: string | null;
   tags: string[];
   file_count: number;
+  comment_count: number;
   files: DocumentListFileItem[];
   review_status: ReviewStatus;
   review_reasons: string[];
@@ -111,6 +114,7 @@ type DocumentListFileItem = {
 type DocumentListApiItem = ApiDocumentListResponse["items"][number] & {
   is_pinned?: boolean;
   pinned_at?: string | null;
+  comment_count?: number;
 };
 
 type DocumentListResponse = Omit<ApiDocumentListResponse, "items"> & {
@@ -417,6 +421,14 @@ export function ArchiveWorkspace() {
   const listRowClassName = listDensity === "compact" ? "min-h-11 py-1 text-[11px]" : "min-h-14 py-1.5 text-xs";
   const titleClassName = listDensity === "compact" ? "truncate text-[12px] font-medium text-stone-900" : "truncate text-sm font-medium text-stone-900";
   const detailId = detail?.id ?? null;
+  const detailAttachmentLinks = useMemo(
+    () =>
+      (detail?.files ?? []).map((file) => ({
+        label: file.original_filename,
+        href: fileDownloadUrl(file.download_path, file.id),
+      })),
+    [detail?.files],
+  );
   const detailTabButtonClass = (tab: DetailTab) =>
     `rounded border px-2 py-1 text-xs ${
       detailTab === tab ? "border-accent bg-accent/10 text-accent" : "border-stone-300 text-stone-700 hover:bg-stone-50"
@@ -630,6 +642,7 @@ export function ArchiveWorkspace() {
             last_modified_at: item.last_modified_at ?? item.ingested_at,
             tags: item.tags ?? [],
             file_count: item.file_count ?? 0,
+            comment_count: item.comment_count ?? 0,
             files: item.files ?? [],
             review_status: item.review_status ?? "NONE",
             review_reasons: item.review_reasons ?? [],
@@ -1725,6 +1738,12 @@ export function ArchiveWorkspace() {
                                   고정
                                 </span>
                               ) : null}
+                              {item.comment_count > 0 ? (
+                                <span className="inline-flex items-center gap-0.5 rounded border border-sky-200 bg-sky-50 px-1 py-0.5 text-[10px] font-semibold text-sky-700">
+                                  <MessageSquare className="h-3 w-3" />
+                                  {item.comment_count}
+                                </span>
+                              ) : null}
                               {showNew ? <StatusBadge tone="new" label="신규" compact /> : null}
                             </div>
                           </div>
@@ -1968,6 +1987,7 @@ export function ArchiveWorkspace() {
                         {detail.caption_raw || "-"}
                       </pre>
                     </details>
+                    <DocumentCommentsPanel documentId={detail.id} compact inlineComposer />
                   </>
                 ) : (
                   <div>
@@ -2019,7 +2039,12 @@ export function ArchiveWorkspace() {
                         value={editEventDate}
                         onChange={(e) => setEditEventDate(e.target.value)}
                       />
-                      <SafeRichContentEditor value={editDescriptionHtml} onChange={setEditDescriptionHtml} minHeightClassName="min-h-[240px]" />
+                      <SafeRichContentEditor
+                        value={editDescriptionHtml}
+                        onChange={setEditDescriptionHtml}
+                        minHeightClassName="min-h-[240px]"
+                        attachmentLinks={detailAttachmentLinks}
+                      />
                       <textarea
                         className="min-h-16 w-full rounded border border-stone-300 px-2 py-1 text-xs"
                         value={editSummary}
@@ -2247,6 +2272,7 @@ export function ArchiveWorkspace() {
                 </ul>
               </div>
             ) : null}
+
           </div>
         ) : null}
       </ModalShell>

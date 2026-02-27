@@ -18,6 +18,7 @@ class DocumentListItem(BaseModel):
     last_modified_at: datetime | None = None
     tags: list[str] = Field(default_factory=list)
     file_count: int = 0
+    comment_count: int = 0
     files: list["DocumentListFileItem"] = Field(default_factory=list)
     review_status: ReviewStatus
     review_reasons: list[str] = Field(default_factory=list)
@@ -125,6 +126,37 @@ class DocumentHistoryResponse(BaseModel):
     page: int
     size: int
     total: int
+
+
+class DocumentCommentItem(BaseModel):
+    id: UUID
+    document_id: UUID
+    content: str
+    created_at: datetime
+    updated_at: datetime
+    created_by: UUID | None = None
+    created_by_username: str | None = None
+    is_edited: bool = False
+    can_edit: bool = False
+    can_delete: bool = False
+
+
+class DocumentCommentListResponse(BaseModel):
+    items: list[DocumentCommentItem] = Field(default_factory=list)
+
+
+class DocumentCommentCreateRequest(BaseModel):
+    content: str
+
+
+class DocumentCommentUpdateRequest(BaseModel):
+    content: str
+
+
+class DocumentCommentDeleteResponse(BaseModel):
+    status: str
+    document_id: UUID
+    comment_id: UUID
 
 
 class DocumentUpdateRequest(BaseModel):
