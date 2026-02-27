@@ -25,6 +25,21 @@ class DashboardRecentDocument(BaseModel):
     review_status: ReviewStatus
 
 
+class DashboardPinnedDocument(BaseModel):
+    id: UUID
+    title: str
+    category: str
+    event_date: date | None = None
+    ingested_at: datetime
+    review_status: ReviewStatus
+
+
+class DashboardPinnedCategory(BaseModel):
+    category: str
+    count: int
+    documents: list[DashboardPinnedDocument] = Field(default_factory=list)
+
+
 class DashboardSummaryResponse(BaseModel):
     total_documents: int
     recent_uploads_7d: int
@@ -34,5 +49,6 @@ class DashboardSummaryResponse(BaseModel):
     dead_letter_count: int
     failed_error_codes: list[DashboardErrorCodeCount] = Field(default_factory=list)
     categories: list[DashboardCategoryCount] = Field(default_factory=list)
+    pinned_by_category: list[DashboardPinnedCategory] = Field(default_factory=list)
     recent_documents: list[DashboardRecentDocument] = Field(default_factory=list)
     generated_at: datetime

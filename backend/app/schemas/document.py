@@ -13,6 +13,8 @@ class DocumentListItem(BaseModel):
     category: str | None = None
     event_date: date | None = None
     ingested_at: datetime
+    is_pinned: bool = False
+    pinned_at: datetime | None = None
     last_modified_at: datetime | None = None
     tags: list[str] = Field(default_factory=list)
     file_count: int = 0
@@ -96,6 +98,8 @@ class DocumentDetailResponse(BaseModel):
     category: str | None = None
     event_date: date | None
     ingested_at: datetime
+    is_pinned: bool = False
+    pinned_at: datetime | None = None
     review_status: ReviewStatus
     review_reasons: list[str]
     current_version_no: int = 1
@@ -126,9 +130,11 @@ class DocumentHistoryResponse(BaseModel):
 class DocumentUpdateRequest(BaseModel):
     title: str | None = None
     description: str | None = None
+    summary: str | None = None
     category_id: UUID | None = None
     category_name: str | None = None
     event_date: date | None = None
+    is_pinned: bool | None = None
     tags: list[str] | None = None
     review_status: ReviewStatus | None = None
 
@@ -146,6 +152,7 @@ class ManualPostCreateRequest(BaseModel):
     category_id: UUID | None = None
     category_name: str | None = None
     event_date: date | None = None
+    is_pinned: bool = False
     tags: list[str] = Field(default_factory=list)
     review_status: ReviewStatus = ReviewStatus.NONE
 

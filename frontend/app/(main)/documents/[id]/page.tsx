@@ -1,14 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Eye, FileText, Pencil, Pin } from "lucide-react";
 
-import { apiDelete, apiGet, apiPatch, buildApiUrl } from "@/lib/api-client";
+import { apiDelete, apiGet, apiPatch, apiPostForm, buildApiUrl } from "@/lib/api-client";
 import { PageMenuHeading } from "@/components/layout/PageMenuHeading";
 import { reviewStatusLabel } from "@/lib/labels";
+import { SafeRichContentEditor } from "@/components/editor/SafeRichContentEditor";
+import { RichContentView } from "@/components/editor/RichContentView";
+import { normalizeRichContentHtml } from "@/lib/rich-content";
 
 type ReviewStatus = "NONE" | "NEEDS_REVIEW" | "RESOLVED";
+type DetailMode = "view" | "edit";
 
 type DocumentFileItem = {
   id: string;
@@ -69,6 +74,8 @@ type DocumentDetailResponse = {
   category: string | null;
   event_date: string | null;
   ingested_at: string;
+  is_pinned: boolean;
+  pinned_at: string | null;
   review_status: ReviewStatus;
   tags: string[];
   files: DocumentFileItem[];
@@ -106,9 +113,20 @@ function parseTagInput(value: string): string[] {
     .filter((token) => token.length > 0);
 }
 
+function hasMeaningfulRichText(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const stripped = value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return stripped.length > 0 && stripped !== "-";
+}
+
 export default function DocumentDetailPage({ params }: PageProps) {
   const router = useRouter();
   const [detail, setDetail] = useState<DocumentDetailResponse | null>(null);
+  const [mode, setMode] = useState<DetailMode>("view");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
@@ -125,7 +143,8 @@ export default function DocumentDetailPage({ params }: PageProps) {
   const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(null);
 
   const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
+  const [editDescriptionHtml, setEditDescriptionHtml] = useState("<p></p>");
+  const [editSummary, setEditSummary] = useState("");
   const [editCategoryName, setEditCategoryName] = useState("");
   const [isCustomCategory, setIsCustomCategory] = useState(false);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
@@ -133,7 +152,10 @@ export default function DocumentDetailPage({ params }: PageProps) {
   const [categoryOptionsError, setCategoryOptionsError] = useState("");
   const [editEventDate, setEditEventDate] = useState("");
   const [editTags, setEditTags] = useState("");
+  const [editIsPinned, setEditIsPinned] = useState(false);
   const [editReviewStatus, setEditReviewStatus] = useState<ReviewStatus>("NONE");
+  const [addFiles, setAddFiles] = useState<File[]>([]);
+  const [addFilesInputKey, setAddFilesInputKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -142,7 +164,10 @@ export default function DocumentDetailPage({ params }: PageProps) {
       setError("");
       try {
         const res = await apiGet<DocumentDetailResponse>(`/documents/${params.id}`);
-        if (!cancelled) setDetail(res);
+        if (!cancelled) {
+          setDetail(res);
+          setMode("view");
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "문서 조회 실패");
@@ -192,25 +217,34 @@ export default function DocumentDetailPage({ params }: PageProps) {
   useEffect(() => {
     if (!detail) {
       setEditTitle("");
-      setEditDescription("");
+      setEditDescriptionHtml("<p></p>");
+      setEditSummary("");
       setEditCategoryName("");
       setIsCustomCategory(false);
       setEditEventDate("");
       setEditTags("");
+      setEditIsPinned(false);
       setEditReviewStatus("NONE");
+      setAddFiles([]);
+      setAddFilesInputKey((prev) => prev + 1);
       setVersionSnapshot(null);
       setVersionSnapshotError("");
       setSelectedVersionNo(null);
       return;
     }
+
     setEditTitle(detail.title);
-    setEditDescription(detail.description || "");
+    setEditDescriptionHtml(normalizeRichContentHtml(detail.description || ""));
+    setEditSummary(detail.summary || "");
     const initialCategory = detail.category || "";
     setEditCategoryName(initialCategory);
     setIsCustomCategory(Boolean(initialCategory));
     setEditEventDate(detail.event_date || "");
     setEditTags(detail.tags.join(", "));
+    setEditIsPinned(detail.is_pinned);
     setEditReviewStatus(detail.review_status);
+    setAddFiles([]);
+    setAddFilesInputKey((prev) => prev + 1);
 
     if (detail.versions.length > 0) {
       const to = detail.versions[0].version_no;
@@ -271,6 +305,19 @@ export default function DocumentDetailPage({ params }: PageProps) {
     };
   }, [detail, diffFromVersionNo, diffToVersionNo]);
 
+  const resetEditState = () => {
+    if (!detail) return;
+    setEditTitle(detail.title);
+    setEditDescriptionHtml(normalizeRichContentHtml(detail.description || ""));
+    setEditSummary(detail.summary || "");
+    setEditCategoryName(detail.category || "");
+    setEditEventDate(detail.event_date || "");
+    setEditTags(detail.tags.join(", "));
+    setEditIsPinned(detail.is_pinned);
+    setEditReviewStatus(detail.review_status);
+    setMode("view");
+  };
+
   const saveDocument = async () => {
     if (!detail) return;
     if (!editTitle.trim()) {
@@ -283,17 +330,48 @@ export default function DocumentDetailPage({ params }: PageProps) {
     try {
       const payload = {
         title: editTitle.trim(),
-        description: editDescription,
+        description: normalizeRichContentHtml(editDescriptionHtml),
+        summary: editSummary,
         category_name: editCategoryName.trim() || null,
         event_date: editEventDate || null,
         tags: parseTagInput(editTags),
+        is_pinned: editIsPinned,
         review_status: editReviewStatus,
       };
       const res = await apiPatch<DocumentDetailResponse>(`/documents/${detail.id}`, payload);
       setDetail(res);
+      setMode("view");
       setNotice("문서 저장이 완료되었습니다.");
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "문서 저장 실패");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const addDocumentFiles = async () => {
+    if (!detail) return;
+    if (addFiles.length === 0) {
+      setActionError("추가할 첨부파일을 선택하세요.");
+      return;
+    }
+    const uploadCount = addFiles.length;
+    setActionBusy(true);
+    setActionError("");
+    setNotice("");
+    try {
+      const form = new FormData();
+      for (const file of addFiles) {
+        form.append("files", file);
+      }
+      form.append("change_reason", "manual_file_add_ui");
+      const res = await apiPostForm<DocumentDetailResponse>(`/documents/${detail.id}/files`, form);
+      setDetail(res);
+      setAddFiles([]);
+      setAddFilesInputKey((prev) => prev + 1);
+      setNotice(`첨부파일 ${uploadCount}개 추가가 완료되었습니다.`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "첨부파일 추가 실패");
     } finally {
       setActionBusy(false);
     }
@@ -332,18 +410,42 @@ export default function DocumentDetailPage({ params }: PageProps) {
     }
   };
 
+  const viewDescriptionHtml = useMemo(() => normalizeRichContentHtml(detail?.description || ""), [detail?.description]);
+
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between">
         <PageMenuHeading title="문서 상세" href={`/documents/${params.id}`} />
         <div className="flex items-center gap-2">
-          <button
-            className="rounded border border-emerald-600 bg-emerald-600 px-3 py-1 text-sm text-white hover:bg-emerald-700 disabled:opacity-50"
-            onClick={() => void saveDocument()}
-            disabled={actionBusy || loading || !detail}
-          >
-            {actionBusy ? "처리 중..." : "게시물 저장"}
-          </button>
+          {mode === "view" ? (
+            <button
+              className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-3 py-1 text-sm text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+              onClick={() => setMode("edit")}
+              disabled={actionBusy || loading || !detail}
+            >
+              <Pencil className="h-4 w-4" />
+              편집 모드
+            </button>
+          ) : (
+            <>
+              <button
+                className="inline-flex items-center gap-1 rounded border border-emerald-600 bg-emerald-600 px-3 py-1 text-sm text-white hover:bg-emerald-700 disabled:opacity-50"
+                onClick={() => void saveDocument()}
+                disabled={actionBusy || loading || !detail}
+              >
+                <Pencil className="h-4 w-4" />
+                {actionBusy ? "저장 중..." : "수정 저장"}
+              </button>
+              <button
+                className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-3 py-1 text-sm text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                onClick={resetEditState}
+                disabled={actionBusy || loading || !detail}
+              >
+                <Eye className="h-4 w-4" />
+                보기 전환
+              </button>
+            </>
+          )}
           <button
             className="rounded border border-red-300 px-3 py-1 text-sm text-red-700 hover:bg-red-50 disabled:opacity-50"
             onClick={() => void deleteDocument()}
@@ -364,39 +466,38 @@ export default function DocumentDetailPage({ params }: PageProps) {
 
       {!loading && !error && detail ? (
         <article className="rounded-lg border border-stone-200 bg-panel p-4 shadow-panel">
-          <h2 className="text-lg font-semibold text-stone-900">{detail.title}</h2>
+          <h2 className="text-2xl font-semibold text-stone-900">{detail.title}</h2>
           <p className="mt-1 text-sm text-stone-600">
             카테고리 {detail.category || "미분류"} | 이벤트일 {detail.event_date || "-"} | 수집 {formatDateTime(detail.ingested_at)} | 상태{" "}
             {reviewStatusLabel(detail.review_status)}
           </p>
+          {detail.is_pinned ? (
+            <p className="mt-1 inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800">
+              <Pin className="h-3.5 w-3.5" />
+              고정글
+            </p>
+          ) : null}
 
-          <div className="mt-3 grid gap-3 lg:grid-cols-2">
-            <section className="rounded border border-stone-200 p-3">
-              <p className="mb-1 text-sm font-semibold text-stone-800">설명</p>
-              <p className="text-sm text-stone-700 whitespace-pre-wrap">{detail.description || "-"}</p>
-            </section>
-
-            <section className="rounded border border-stone-200 p-3">
-              <p className="mb-1 text-sm font-semibold text-stone-800">요약</p>
-              <p className="text-sm text-stone-700 whitespace-pre-wrap">{detail.summary || "-"}</p>
-            </section>
-          </div>
-
-          <section className="mt-3 rounded border border-stone-200 p-3">
-            <p className="mb-2 text-sm font-semibold text-stone-800">문서 편집</p>
-            <div className="space-y-2">
-              <input
-                className="w-full rounded border border-stone-300 px-2 py-1 text-sm"
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                placeholder="제목"
-              />
-              <textarea
-                className="min-h-24 w-full rounded border border-stone-300 px-2 py-1 text-sm"
-                value={editDescription}
-                onChange={(e) => setEditDescription(e.target.value)}
-                placeholder="설명"
-              />
+          {mode === "edit" ? (
+            <section className="mt-4 space-y-3 rounded border border-stone-200 bg-stone-50 p-3">
+              <p className="inline-flex items-center gap-1 text-sm font-semibold text-stone-800">
+                <Pencil className="h-4 w-4" />
+                리치 편집 모드
+              </p>
+              <div className="grid gap-2 lg:grid-cols-2">
+                <input
+                  className="w-full rounded border border-stone-300 px-2 py-1 text-sm"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  placeholder="제목"
+                />
+                <input
+                  className="w-full rounded border border-stone-300 px-2 py-1 text-sm"
+                  type="date"
+                  value={editEventDate}
+                  onChange={(e) => setEditEventDate(e.target.value)}
+                />
+              </div>
               <select
                 className="w-full rounded border border-stone-300 px-2 py-1 text-sm"
                 value={isCustomCategory ? "__custom__" : editCategoryName}
@@ -428,43 +529,91 @@ export default function DocumentDetailPage({ params }: PageProps) {
               ) : null}
               {categoryOptionsLoading ? <p className="text-xs text-stone-500">카테고리 목록 로딩 중...</p> : null}
               {categoryOptionsError ? <p className="text-xs text-amber-700">목록 로드 실패: {categoryOptionsError}</p> : null}
-              <input
-                className="w-full rounded border border-stone-300 px-2 py-1 text-sm"
-                type="date"
-                value={editEventDate}
-                onChange={(e) => setEditEventDate(e.target.value)}
-              />
+
+              <SafeRichContentEditor value={editDescriptionHtml} onChange={setEditDescriptionHtml} minHeightClassName="min-h-[320px]" />
               <textarea
                 className="min-h-20 w-full rounded border border-stone-300 px-2 py-1 text-sm"
+                value={editSummary}
+                onChange={(e) => setEditSummary(e.target.value)}
+                placeholder="요약 (비워두면 빈 요약으로 저장됩니다)"
+              />
+
+              <textarea
+                className="min-h-16 w-full rounded border border-stone-300 px-2 py-1 text-sm"
                 value={editTags}
                 onChange={(e) => setEditTags(e.target.value)}
                 placeholder="태그(쉼표 또는 줄바꿈)"
               />
-              <select
-                className="w-full rounded border border-stone-300 px-2 py-1 text-sm"
-                value={editReviewStatus}
-                onChange={(e) => setEditReviewStatus(e.target.value as ReviewStatus)}
-              >
-                <option value="NONE">{reviewStatusLabel("NONE")}</option>
-                <option value="NEEDS_REVIEW">{reviewStatusLabel("NEEDS_REVIEW")}</option>
-                <option value="RESOLVED">{reviewStatusLabel("RESOLVED")}</option>
-              </select>
-            </div>
-          </section>
+              <div className="grid gap-2 lg:grid-cols-2">
+                <label className="inline-flex items-center gap-2 rounded border border-stone-300 bg-white px-2 py-1 text-sm text-stone-700">
+                  <input
+                    type="checkbox"
+                    checked={editIsPinned}
+                    onChange={(e) => setEditIsPinned(e.target.checked)}
+                  />
+                  고정글로 설정 (대시보드 카테고리별 고정글 노출)
+                </label>
+                <select
+                  className="w-full rounded border border-stone-300 px-2 py-1 text-sm"
+                  value={editReviewStatus}
+                  onChange={(e) => setEditReviewStatus(e.target.value as ReviewStatus)}
+                >
+                  <option value="NONE">{reviewStatusLabel("NONE")}</option>
+                  <option value="NEEDS_REVIEW">{reviewStatusLabel("NEEDS_REVIEW")}</option>
+                  <option value="RESOLVED">{reviewStatusLabel("RESOLVED")}</option>
+                </select>
+              </div>
+            </section>
+          ) : (
+            <section className="mt-4 rounded border border-stone-200 bg-white p-5">
+              <p className="mb-3 inline-flex items-center gap-1 text-sm font-semibold text-stone-700">
+                <FileText className="h-4 w-4" />
+                문서 본문
+              </p>
+              <RichContentView html={viewDescriptionHtml} className="mx-auto max-w-none" />
+            </section>
+          )}
+
+          {mode === "view" && hasMeaningfulRichText(detail.summary) ? (
+            <section className="mt-4 rounded border border-stone-200 p-3">
+              <p className="mb-1 text-sm font-semibold text-stone-800">요약</p>
+              <RichContentView html={normalizeRichContentHtml(detail.summary)} className="text-sm" />
+            </section>
+          ) : null}
 
           <section className="mt-3 rounded border border-stone-200 p-3">
             <p className="mb-1 text-sm font-semibold text-stone-800">파일 목록</p>
+            <div className="mb-3 space-y-2 rounded border border-stone-200 bg-stone-50 p-2">
+              <p className="text-xs font-semibold text-stone-700">첨부파일 추가</p>
+              <input
+                key={addFilesInputKey}
+                className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
+                type="file"
+                multiple
+                onChange={(e) => setAddFiles(Array.from(e.target.files ?? []))}
+              />
+              {addFiles.length > 0 ? (
+                <p className="line-clamp-3 break-all text-[11px] text-stone-600">{addFiles.map((file) => file.name).join(", ")}</p>
+              ) : null}
+              <button
+                className="rounded border border-stone-300 px-2 py-1 text-xs hover:bg-stone-100 disabled:opacity-50"
+                onClick={() => void addDocumentFiles()}
+                disabled={actionBusy || loading || !detail || addFiles.length === 0}
+              >
+                {actionBusy ? "처리 중..." : `선택 파일 ${addFiles.length || 0}개 추가`}
+              </button>
+            </div>
             {detail.files.length === 0 ? <p className="text-sm text-stone-600">파일 없음</p> : null}
             <ul className="space-y-2">
               {detail.files.map((file) => (
                 <li key={file.id} className="rounded border border-stone-200 p-2 text-sm">
                   <a
-                    className="font-medium text-blue-700 hover:underline"
+                    className="inline-flex min-w-0 items-center gap-1 font-medium text-blue-700 hover:underline"
                     href={fileDownloadUrl(file.download_path, file.id)}
                     target="_blank"
                     rel="noreferrer"
                   >
-                    {file.original_filename}
+                    <span className="truncate">{file.original_filename}</span>
                   </a>
                   <p className="text-xs text-stone-600">
                     {file.mime_type} | {formatBytes(file.size_bytes)}
@@ -474,12 +623,16 @@ export default function DocumentDetailPage({ params }: PageProps) {
             </ul>
           </section>
 
-          <section className="mt-3 rounded border border-stone-200 p-3">
-            <p className="mb-1 text-sm font-semibold text-stone-800">원본 캡션</p>
-            <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded border border-stone-100 bg-stone-50 p-2 text-xs text-stone-700">
-              {detail.caption_raw || "-"}
-            </pre>
-          </section>
+          {mode === "view" ? (
+            <section className="mt-3 rounded border border-stone-200 p-3">
+              <details className="rounded border border-stone-200 bg-stone-50 p-2">
+                <summary className="cursor-pointer select-none text-sm font-semibold text-stone-800">원본 캡션 펼치기</summary>
+                <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap rounded border border-stone-100 bg-white p-2 text-xs text-stone-700">
+                  {detail.caption_raw || "-"}
+                </pre>
+              </details>
+            </section>
+          ) : null}
 
           <section className="mt-3 rounded border border-stone-200 p-3">
             <p className="mb-1 text-sm font-semibold text-stone-800">버전 히스토리</p>
@@ -514,15 +667,11 @@ export default function DocumentDetailPage({ params }: PageProps) {
                 <div className="mt-2 grid gap-2 md:grid-cols-2">
                   <div className="rounded border border-stone-200 bg-white p-2">
                     <p className="mb-1 font-semibold text-stone-700">설명</p>
-                    <pre className="max-h-32 overflow-auto whitespace-pre-wrap text-[11px] text-stone-700">
-                      {versionSnapshot.description || "-"}
-                    </pre>
+                    <RichContentView html={normalizeRichContentHtml(versionSnapshot.description || "-")} className="max-h-36 overflow-auto text-[11px]" />
                   </div>
                   <div className="rounded border border-stone-200 bg-white p-2">
                     <p className="mb-1 font-semibold text-stone-700">요약</p>
-                    <pre className="max-h-32 overflow-auto whitespace-pre-wrap text-[11px] text-stone-700">
-                      {versionSnapshot.summary || "-"}
-                    </pre>
+                    <RichContentView html={normalizeRichContentHtml(versionSnapshot.summary || "-")} className="max-h-36 overflow-auto text-[11px]" />
                   </div>
                 </div>
               </div>

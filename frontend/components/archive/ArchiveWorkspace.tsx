@@ -9,8 +9,11 @@ import type { ApiDocumentHistoryResponse, ApiDocumentListResponse } from "@/lib/
 import { FileTypeBadge } from "@/components/common/FileTypeBadge";
 import { ModalShell } from "@/components/common/ModalShell";
 import { StatusBadge, type StatusTone } from "@/components/common/StatusBadge";
+import { SafeRichContentEditor } from "@/components/editor/SafeRichContentEditor";
+import { RichContentView } from "@/components/editor/RichContentView";
 import {
   CalendarDays,
+  Eye,
   FileText,
   FolderTree,
   Search,
@@ -22,6 +25,7 @@ import {
   ListFilter,
   Clock3,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Pencil,
   AlignLeft,
@@ -32,6 +36,8 @@ import {
   SlidersHorizontal,
   ArrowUp,
   ArrowDown,
+  Pin,
+  GitBranch,
 } from "lucide-react";
 import { reviewStatusLabel } from "@/lib/labels";
 import {
@@ -52,6 +58,7 @@ import {
   upsertArchiveViewPreset,
   type ArchiveViewPreset,
 } from "@/lib/archive-view-presets";
+import { normalizeRichContentHtml } from "@/lib/rich-content";
 
 type ReviewStatus = "NONE" | "NEEDS_REVIEW" | "RESOLVED";
 type DocumentSortBy = "event_date" | "ingested_at" | "created_at" | "title" | "last_modified_at";
@@ -86,6 +93,7 @@ type DocumentListItem = {
   category: string | null;
   event_date: string | null;
   ingested_at: string;
+  is_pinned: boolean;
   last_modified_at: string | null;
   tags: string[];
   file_count: number;
@@ -100,7 +108,14 @@ type DocumentListFileItem = {
   download_path?: string;
 };
 
-type DocumentListResponse = ApiDocumentListResponse;
+type DocumentListApiItem = ApiDocumentListResponse["items"][number] & {
+  is_pinned?: boolean;
+  pinned_at?: string | null;
+};
+
+type DocumentListResponse = Omit<ApiDocumentListResponse, "items"> & {
+  items: DocumentListApiItem[];
+};
 
 type DocumentFileItem = {
   id: string;
@@ -146,6 +161,8 @@ type DocumentDetailResponse = {
   category: string | null;
   event_date: string | null;
   ingested_at: string;
+  is_pinned: boolean;
+  pinned_at: string | null;
   review_status: ReviewStatus;
   review_reasons: string[];
   current_version_no: number;
@@ -155,6 +172,7 @@ type DocumentDetailResponse = {
 };
 
 type DetailTab = "meta" | "files" | "versions" | "history";
+type DetailMetaMode = "view" | "edit";
 
 type DocumentHistoryResponse = ApiDocumentHistoryResponse;
 type DocumentHistoryItem = DocumentHistoryResponse["items"][number];
@@ -245,10 +263,14 @@ function parseTagInput(value: string): string[] {
     .filter((token) => token.length > 0);
 }
 
-function fileExtensionLabel(filename: string): string {
-  const dotIndex = filename.lastIndexOf(".");
-  if (dotIndex <= 0 || dotIndex >= filename.length - 1) return "FILE";
-  return filename.slice(dotIndex + 1).toUpperCase();
+function hasMeaningfulRichText(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const stripped = value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return stripped.length > 0 && stripped !== "-";
 }
 
 function isErrorReason(reason: string): boolean {
@@ -307,6 +329,7 @@ export function ArchiveWorkspace() {
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [detailTab, setDetailTab] = useState<DetailTab>("meta");
+  const [detailMetaMode, setDetailMetaMode] = useState<DetailMetaMode>("view");
   const [detail, setDetail] = useState<DocumentDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
@@ -316,6 +339,8 @@ export function ArchiveWorkspace() {
   const [historyError, setHistoryError] = useState("");
   const [historyTotal, setHistoryTotal] = useState(0);
   const [fileActionLoadingId, setFileActionLoadingId] = useState<string | null>(null);
+  const [addUploads, setAddUploads] = useState<File[]>([]);
+  const [addInputKey, setAddInputKey] = useState(0);
   const [replaceTargetFileId, setReplaceTargetFileId] = useState("");
   const [replaceUpload, setReplaceUpload] = useState<File | null>(null);
   const [replaceInputKey, setReplaceInputKey] = useState(0);
@@ -327,7 +352,8 @@ export function ArchiveWorkspace() {
   const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(null);
 
   const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
+  const [editDescriptionHtml, setEditDescriptionHtml] = useState("<p></p>");
+  const [editSummary, setEditSummary] = useState("");
   const [editCategoryName, setEditCategoryName] = useState("");
   const [isCustomCategory, setIsCustomCategory] = useState(false);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
@@ -335,6 +361,7 @@ export function ArchiveWorkspace() {
   const [categoryOptionsError, setCategoryOptionsError] = useState("");
   const [editEventDate, setEditEventDate] = useState("");
   const [editTags, setEditTags] = useState("");
+  const [editIsPinned, setEditIsPinned] = useState(false);
   const [editReviewStatus, setEditReviewStatus] = useState<ReviewStatus>("NONE");
 
   const [categoryFilter, setCategoryFilter] = useState(initialCategory);
@@ -358,6 +385,10 @@ export function ArchiveWorkspace() {
   const [viewPresetName, setViewPresetName] = useState("");
   const [searchPanelOpen, setSearchPanelOpen] = useState(false);
   const [listToolsPanelOpen, setListToolsPanelOpen] = useState(false);
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(initialCategory || null);
+  const [expandedYearsByCategory, setExpandedYearsByCategory] = useState<Record<string, number | null>>(
+    initialCategory ? { [initialCategory]: initialYear ?? null } : {},
+  );
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [pageSize, total]);
   const activeFilterCount = useMemo(() => {
@@ -392,8 +423,10 @@ export function ArchiveWorkspace() {
     }`;
 
   useEffect(() => {
-    setCategoryFilter(searchParams.get("category") || "");
-    setYearFilter(parseOptionalPositiveInt(searchParams.get("year")));
+    const nextCategory = searchParams.get("category") || "";
+    const nextYear = parseOptionalPositiveInt(searchParams.get("year"));
+    setCategoryFilter(nextCategory);
+    setYearFilter(nextYear);
     setMonthFilter(parseOptionalPositiveInt(searchParams.get("month")));
     setReviewStatus(parseReviewStatus(searchParams.get("review_status")));
     const q = searchParams.get("q") || "";
@@ -402,6 +435,8 @@ export function ArchiveWorkspace() {
     setSortBy(parseSortBy(searchParams.get("sort_by")));
     setSortOrder(parseSortOrder(searchParams.get("sort_order")));
     setPage(parseOptionalPositiveInt(searchParams.get("page")) || 1);
+    setExpandedCategory(nextCategory || null);
+    setExpandedYearsByCategory(nextCategory ? { [nextCategory]: nextYear ?? null } : {});
   }, [searchParams]);
 
   useEffect(() => {
@@ -591,6 +626,7 @@ export function ArchiveWorkspace() {
             category: item.category ?? null,
             event_date: item.event_date ?? null,
             ingested_at: item.ingested_at,
+            is_pinned: item.is_pinned ?? false,
             last_modified_at: item.last_modified_at ?? item.ingested_at,
             tags: item.tags ?? [],
             file_count: item.file_count ?? 0,
@@ -629,6 +665,7 @@ export function ArchiveWorkspace() {
       setDetail(null);
       setDetailError("");
       setDetailTab("meta");
+      setDetailMetaMode("view");
       setHistoryItems([]);
       setHistoryError("");
       setHistoryTotal(0);
@@ -644,7 +681,10 @@ export function ArchiveWorkspace() {
       setDetailNotice("");
       try {
         const res = await apiGet<DocumentDetailResponse>(`/documents/${selectedDocId}`);
-        if (!cancelled) setDetail(res);
+        if (!cancelled) {
+          setDetail(res);
+          setDetailMetaMode("view");
+        }
       } catch (err) {
         if (!cancelled) {
           setDetailError(err instanceof Error ? err.message : "detail load failed");
@@ -691,38 +731,51 @@ export function ArchiveWorkspace() {
 
   useEffect(() => {
     if (!detail || detail.files.length === 0) {
+      setAddUploads([]);
+      setAddInputKey((prev) => prev + 1);
       setReplaceTargetFileId("");
       setReplaceUpload(null);
+      setReplaceInputKey((prev) => prev + 1);
       return;
     }
     setReplaceTargetFileId((prev) => {
       if (prev && detail.files.some((f) => f.id === prev)) return prev;
       return detail.files[0].id;
     });
+    setAddUploads([]);
+    setAddInputKey((prev) => prev + 1);
+    setReplaceUpload(null);
+    setReplaceInputKey((prev) => prev + 1);
   }, [detail]);
 
   useEffect(() => {
     if (!detail) {
       setEditTitle("");
-      setEditDescription("");
+      setEditDescriptionHtml("<p></p>");
+      setEditSummary("");
       setEditCategoryName("");
       setIsCustomCategory(false);
       setEditEventDate("");
       setEditTags("");
+      setEditIsPinned(false);
       setEditReviewStatus("NONE");
+      setDetailMetaMode("view");
       setVersionSnapshot(null);
       setVersionSnapshotError("");
       setSelectedVersionNo(null);
       return;
     }
     setEditTitle(detail.title);
-    setEditDescription(detail.description);
+    setEditDescriptionHtml(normalizeRichContentHtml(detail.description || ""));
+    setEditSummary(detail.summary || "");
     const initialCategory = detail.category ?? "";
     setEditCategoryName(initialCategory);
     setIsCustomCategory(Boolean(initialCategory));
     setEditEventDate(detail.event_date ?? "");
     setEditTags(detail.tags.join(", "));
+    setEditIsPinned(detail.is_pinned);
     setEditReviewStatus(detail.review_status);
+    setDetailMetaMode("view");
     setVersionSnapshot(null);
     setVersionSnapshotError("");
     setSelectedVersionNo(null);
@@ -741,7 +794,7 @@ export function ArchiveWorkspace() {
   const deleteDetailFile = async (fileId: string) => {
     if (!detail) return;
     const fileRow = detail.files.find((f) => f.id === fileId);
-    const filename = fileRow ? fileExtensionLabel(fileRow.original_filename) : "선택 파일";
+    const filename = fileRow?.original_filename || "선택 파일";
     const confirmed = window.confirm(`파일을 삭제하시겠습니까?\n${filename}`);
     if (!confirmed) return;
 
@@ -755,6 +808,36 @@ export function ArchiveWorkspace() {
       setRefreshTick((prev) => prev + 1);
     } catch (err) {
       setDetailError(err instanceof Error ? err.message : "파일 삭제 실패");
+    } finally {
+      setFileActionLoadingId(null);
+    }
+  };
+
+  const addDetailFiles = async () => {
+    if (!detail) return;
+    if (addUploads.length === 0) {
+      setDetailError("추가할 파일을 선택하세요.");
+      return;
+    }
+
+    const uploadCount = addUploads.length;
+    setFileActionLoadingId("__add__");
+    setDetailError("");
+    setDetailNotice("");
+    try {
+      const form = new FormData();
+      for (const file of addUploads) {
+        form.append("files", file);
+      }
+      form.append("change_reason", "manual_file_add_ui");
+      const res = await apiPostForm<DocumentDetailResponse>(`/documents/${detail.id}/files`, form);
+      setDetail(res);
+      setAddUploads([]);
+      setAddInputKey((prev) => prev + 1);
+      setDetailNotice(`파일 ${uploadCount}개 추가가 완료되었습니다.`);
+      setRefreshTick((prev) => prev + 1);
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : "파일 추가 실패");
     } finally {
       setFileActionLoadingId(null);
     }
@@ -804,14 +887,17 @@ export function ArchiveWorkspace() {
     try {
       const payload = {
         title: editTitle.trim(),
-        description: editDescription,
+        description: normalizeRichContentHtml(editDescriptionHtml),
+        summary: editSummary,
         category_name: editCategoryName.trim() || null,
         event_date: editEventDate || null,
         tags: parseTagInput(editTags),
+        is_pinned: editIsPinned,
         review_status: editReviewStatus,
       };
       const res = await apiPatch<DocumentDetailResponse>(`/documents/${detail.id}`, payload);
       setDetail(res);
+      setDetailMetaMode("view");
       setDetailNotice("게시물 수정이 완료되었습니다.");
       setRefreshTick((prev) => prev + 1);
     } catch (err) {
@@ -819,6 +905,19 @@ export function ArchiveWorkspace() {
     } finally {
       setDocActionLoading(false);
     }
+  };
+
+  const resetDetailMetaEditor = () => {
+    if (!detail) return;
+    setEditTitle(detail.title);
+    setEditDescriptionHtml(normalizeRichContentHtml(detail.description || ""));
+    setEditSummary(detail.summary || "");
+    setEditCategoryName(detail.category ?? "");
+    setEditEventDate(detail.event_date ?? "");
+    setEditTags(detail.tags.join(", "));
+    setEditIsPinned(detail.is_pinned);
+    setEditReviewStatus(detail.review_status);
+    setDetailMetaMode("view");
   };
 
   const quickResolveDetailReview = async () => {
@@ -853,6 +952,7 @@ export function ArchiveWorkspace() {
       await apiDelete<{ status: string; document_id: string }>(`/documents/${detail.id}`);
       setSelectedDocId(null);
       setDetail(null);
+      setDetailMetaMode("view");
       setIsDetailModalOpen(false);
       setDetailNotice("게시물 삭제가 완료되었습니다.");
       setRefreshTick((prev) => prev + 1);
@@ -986,6 +1086,8 @@ export function ArchiveWorkspace() {
     setCategoryFilter("");
     setYearFilter(null);
     setMonthFilter(null);
+    setExpandedCategory(null);
+    setExpandedYearsByCategory({});
     setReviewStatus("");
     setSearchInput("");
     setSearchQuery("");
@@ -1028,6 +1130,8 @@ export function ArchiveWorkspace() {
     setCategoryFilter(payload.category_filter || "");
     setYearFilter(payload.year_filter ?? null);
     setMonthFilter(payload.month_filter ?? null);
+    setExpandedCategory(payload.category_filter || null);
+    setExpandedYearsByCategory(payload.category_filter ? { [payload.category_filter]: payload.year_filter ?? null } : {});
     setReviewStatus(parseReviewStatus(payload.review_status || null));
     setSearchInput(payload.search_query || "");
     setSearchQuery(payload.search_query || "");
@@ -1070,6 +1174,8 @@ export function ArchiveWorkspace() {
   };
 
   const selectCategory = (category: string) => {
+    setExpandedCategory(category);
+    setExpandedYearsByCategory((prev) => ({ ...prev, [category]: null }));
     setCategoryFilter(category);
     setYearFilter(null);
     setMonthFilter(null);
@@ -1077,6 +1183,8 @@ export function ArchiveWorkspace() {
   };
 
   const selectYear = (category: string, year: number) => {
+    setExpandedCategory(category);
+    setExpandedYearsByCategory((prev) => ({ ...prev, [category]: year }));
     setCategoryFilter(category);
     setYearFilter(year);
     setMonthFilter(null);
@@ -1084,6 +1192,8 @@ export function ArchiveWorkspace() {
   };
 
   const selectMonth = (category: string, year: number, month: number) => {
+    setExpandedCategory(category);
+    setExpandedYearsByCategory((prev) => ({ ...prev, [category]: year }));
     setCategoryFilter(category);
     setYearFilter(year);
     setMonthFilter(month);
@@ -1158,57 +1268,70 @@ export function ArchiveWorkspace() {
           <p className="text-sm text-stone-600">데이터 없음</p>
         ) : null}
         <div className="space-y-2">
-          {tree?.categories.map((cat) => (
-            <div key={cat.category} className="rounded border border-stone-200 p-2">
-              <button
-                className={`w-full rounded px-2 py-1 text-left text-sm ${
-                  categoryFilter === cat.category && yearFilter == null ? "bg-stone-100 font-medium" : "hover:bg-stone-50"
-                }`}
-                onClick={() => selectCategory(cat.category)}
-              >
-                <span className="inline-flex items-center gap-1">
-                  <FileText className="h-3.5 w-3.5 text-stone-500" />
-                  {cat.category} ({cat.count})
-                </span>
-              </button>
-              <div className="ml-2 mt-1 space-y-1">
-                {cat.years.map((yearNode) => (
-                  <div key={`${cat.category}-${yearNode.year}`}>
-                    <button
-                      className={`w-full rounded px-2 py-1 text-left text-xs ${
-                        categoryFilter === cat.category && yearFilter === yearNode.year && monthFilter == null
-                          ? "bg-stone-100 font-medium"
-                          : "hover:bg-stone-50"
-                      }`}
-                      onClick={() => selectYear(cat.category, yearNode.year)}
-                    >
-                      <span className="inline-flex items-center gap-1">
-                        <CalendarDays className="h-3.5 w-3.5 text-stone-500" />
-                        {yearNode.year}년 ({yearNode.count})
-                      </span>
-                    </button>
-                    <div className="ml-2 mt-1 flex flex-wrap gap-1">
-                      {yearNode.months.map((monthNode) => (
-                        <button
-                          key={`${cat.category}-${yearNode.year}-${monthNode.month}`}
-                          className={`rounded border px-2 py-0.5 text-xs ${
-                            categoryFilter === cat.category &&
-                            yearFilter === yearNode.year &&
-                            monthFilter === monthNode.month
-                              ? "border-accent bg-accent text-white"
-                              : "border-stone-300 hover:bg-stone-50"
-                          }`}
-                          onClick={() => selectMonth(cat.category, yearNode.year, monthNode.month)}
-                        >
-                          {monthNode.month}월 ({monthNode.count})
-                        </button>
-                      ))}
-                    </div>
+          {tree?.categories.map((cat) => {
+            const isCategoryExpanded = expandedCategory === cat.category;
+            const expandedYear = expandedYearsByCategory[cat.category] ?? null;
+            return (
+              <div key={cat.category} className="rounded border border-stone-200 p-2">
+                <button
+                  className={`w-full rounded px-2 py-1 text-left text-sm ${
+                    categoryFilter === cat.category && yearFilter == null ? "bg-stone-100 font-medium" : "hover:bg-stone-50"
+                  }`}
+                  onClick={() => selectCategory(cat.category)}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    {isCategoryExpanded ? <ChevronDown className="h-3.5 w-3.5 text-stone-500" /> : <ChevronRight className="h-3.5 w-3.5 text-stone-500" />}
+                    <FileText className="h-3.5 w-3.5 text-stone-500" />
+                    {cat.category} ({cat.count})
+                  </span>
+                </button>
+                {isCategoryExpanded ? (
+                  <div className="ml-2 mt-1 space-y-1">
+                    {cat.years.map((yearNode) => {
+                      const isYearExpanded = expandedYear === yearNode.year;
+                      return (
+                        <div key={`${cat.category}-${yearNode.year}`}>
+                          <button
+                            className={`w-full rounded px-2 py-1 text-left text-xs ${
+                              categoryFilter === cat.category && yearFilter === yearNode.year && monthFilter == null
+                                ? "bg-stone-100 font-medium"
+                                : "hover:bg-stone-50"
+                            }`}
+                            onClick={() => selectYear(cat.category, yearNode.year)}
+                          >
+                            <span className="inline-flex items-center gap-1">
+                              {isYearExpanded ? <ChevronDown className="h-3 w-3 text-stone-500" /> : <ChevronRight className="h-3 w-3 text-stone-500" />}
+                              <CalendarDays className="h-3.5 w-3.5 text-stone-500" />
+                              {yearNode.year}년 ({yearNode.count})
+                            </span>
+                          </button>
+                          {isYearExpanded ? (
+                            <div className="ml-5 mt-1 flex flex-wrap gap-1">
+                              {yearNode.months.map((monthNode) => (
+                                <button
+                                  key={`${cat.category}-${yearNode.year}-${monthNode.month}`}
+                                  className={`rounded border px-2 py-0.5 text-xs ${
+                                    categoryFilter === cat.category &&
+                                    yearFilter === yearNode.year &&
+                                    monthFilter === monthNode.month
+                                      ? "border-accent bg-accent text-white"
+                                      : "border-stone-300 hover:bg-stone-50"
+                                  }`}
+                                  onClick={() => selectMonth(cat.category, yearNode.year, monthNode.month)}
+                                >
+                                  {monthNode.month}월 ({monthNode.count})
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
+                ) : null}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </article>
 
@@ -1240,13 +1363,29 @@ export function ArchiveWorkspace() {
                 필터 초기화
               </button>
             ) : null}
-            <Link
-              href="/manual-post"
-              className="ml-auto inline-flex items-center justify-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs text-stone-700 hover:bg-stone-50"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-              상세게시
-            </Link>
+            <div className="ml-auto inline-flex items-center gap-2">
+              <Link
+                href="/dashboard"
+                className="inline-flex items-center justify-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs text-stone-700 hover:bg-stone-50"
+              >
+                <Files className="h-3.5 w-3.5" />
+                대시보드
+              </Link>
+              <Link
+                href="/mind-map"
+                className="inline-flex items-center justify-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs text-stone-700 hover:bg-stone-50"
+              >
+                <GitBranch className="h-3.5 w-3.5" />
+                마인드맵
+              </Link>
+              <Link
+                href="/manual-post"
+                className="inline-flex items-center justify-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs text-stone-700 hover:bg-stone-50"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                상세게시
+              </Link>
+            </div>
           </div>
         </div>
 
@@ -1580,6 +1719,12 @@ export function ArchiveWorkspace() {
                           <div key={`${item.id}-title`} className="min-w-0">
                             <div className="flex items-center gap-1">
                               <p className={titleClassName}>{item.title}</p>
+                              {item.is_pinned ? (
+                                <span className="inline-flex items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1 py-0.5 text-[10px] font-semibold text-amber-800">
+                                  <Pin className="h-3 w-3" />
+                                  고정
+                                </span>
+                              ) : null}
                               {showNew ? <StatusBadge tone="new" label="신규" compact /> : null}
                             </div>
                           </div>
@@ -1606,13 +1751,14 @@ export function ArchiveWorkspace() {
                               <span className="inline-flex max-w-full items-center gap-1">
                                 <Paperclip className="h-3.5 w-3.5 shrink-0 text-stone-500" />
                                 <a
-                                  className="inline-flex items-center text-blue-700 hover:bg-blue-50"
+                                  className="inline-flex min-w-0 items-center gap-1 text-blue-700 hover:bg-blue-50"
                                   href={fileDownloadUrl(item.files[0].download_path, item.files[0].id)}
                                   target="_blank"
                                   rel="noreferrer"
                                   onClick={(e) => e.stopPropagation()}
                                 >
                                   <FileTypeBadge filename={item.files[0].original_filename} compact />
+                                  <span className="max-w-[10rem] truncate">{item.files[0].original_filename}</span>
                                 </a>
                               </span>
                             ) : (
@@ -1687,7 +1833,12 @@ export function ArchiveWorkspace() {
         </div>
       </article>
 
-      <ModalShell open={isDetailModalOpen} onClose={() => setIsDetailModalOpen(false)} title="문서 상세">
+      <ModalShell
+        open={isDetailModalOpen}
+        onClose={() => setIsDetailModalOpen(false)}
+        title="문서 상세"
+        maxWidthClassName="max-w-[96vw]"
+      >
         {detailLoading ? <p className="text-sm text-stone-600">상세 로딩 중...</p> : null}
         {detailError ? <p className="text-sm text-red-700">상세 처리 오류: {detailError}</p> : null}
         {detailNotice ? <p className="text-sm text-emerald-700">{detailNotice}</p> : null}
@@ -1702,6 +1853,12 @@ export function ArchiveWorkspace() {
                   {detail.category || "미분류"} | 이벤트일 {formatDate(detail.event_date)} | 수집 {formatDateTime(detail.ingested_at)}
                 </p>
                 <div className="flex flex-wrap items-center gap-1">
+                  {detail.is_pinned ? (
+                    <span className="inline-flex items-center gap-0.5 rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                      <Pin className="h-3 w-3" />
+                      고정글
+                    </span>
+                  ) : null}
                   {(() => {
                     const status = statusBadgeForDocument({
                       review_status: detail.review_status,
@@ -1730,13 +1887,34 @@ export function ArchiveWorkspace() {
                 >
                   {docActionLoading ? "처리 중..." : "검토 완료"}
                 </button>
-                <button
-                  className="rounded border border-emerald-600 bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-50"
-                  onClick={() => void saveDetailDocument()}
-                  disabled={docActionLoading || Boolean(fileActionLoadingId)}
-                >
-                  {docActionLoading ? "저장 중..." : "게시물 저장"}
-                </button>
+                {detailMetaMode === "view" ? (
+                  <button
+                    className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                    onClick={() => setDetailMetaMode("edit")}
+                    disabled={docActionLoading || Boolean(fileActionLoadingId)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    편집모드
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      className="rounded border border-emerald-600 bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-50"
+                      onClick={() => void saveDetailDocument()}
+                      disabled={docActionLoading || Boolean(fileActionLoadingId)}
+                    >
+                      {docActionLoading ? "저장 중..." : "게시물 저장"}
+                    </button>
+                    <button
+                      className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                      onClick={resetDetailMetaEditor}
+                      disabled={docActionLoading || Boolean(fileActionLoadingId)}
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      보기전환
+                    </button>
+                  </>
+                )}
                 <button
                   className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50"
                   onClick={() => void deleteDetailDocument()}
@@ -1764,99 +1942,148 @@ export function ArchiveWorkspace() {
 
             {detailTab === "meta" ? (
               <div className="space-y-3">
-                <div>
-                  <p className="mb-1 inline-flex items-center gap-1 text-xs font-semibold text-stone-700">
-                    <Pencil className="h-3.5 w-3.5" />
-                    게시물 편집
-                  </p>
-                  <div className="space-y-2 rounded border border-stone-200 p-2">
-                    <input
-                      className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
-                      value={editTitle}
-                      onChange={(e) => setEditTitle(e.target.value)}
-                      placeholder="제목"
-                    />
-                    <textarea
-                      className="min-h-20 w-full rounded border border-stone-300 px-2 py-1 text-xs"
-                      value={editDescription}
-                      onChange={(e) => setEditDescription(e.target.value)}
-                      placeholder="설명"
-                    />
-                    <select
-                      className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
-                      value={isCustomCategory ? "__custom__" : editCategoryName}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        if (value === "__custom__") {
-                          setIsCustomCategory(true);
-                          return;
-                        }
-                        setIsCustomCategory(false);
-                        setEditCategoryName(value);
-                      }}
-                    >
-                      <option value="">카테고리 선택</option>
-                      {categoryOptions.map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
-                      <option value="__custom__">직접 입력</option>
-                    </select>
-                    {isCustomCategory ? (
+                {detailMetaMode === "view" ? (
+                  <>
+                    <div className="rounded border border-stone-200 bg-white p-3">
+                      <p className="mb-2 inline-flex items-center gap-1 text-xs font-semibold text-stone-700">
+                        <FileText className="h-3.5 w-3.5" />
+                        문서 본문
+                      </p>
+                      <RichContentView html={normalizeRichContentHtml(detail.description || "")} />
+                    </div>
+                    {hasMeaningfulRichText(detail.summary) ? (
+                      <div className="rounded border border-stone-200 bg-stone-50 p-2">
+                        <p className="mb-1 inline-flex items-center gap-1 text-xs font-semibold text-stone-700">
+                          <AlignLeft className="h-3.5 w-3.5" />
+                          요약
+                        </p>
+                        <RichContentView html={normalizeRichContentHtml(detail.summary)} className="text-xs" />
+                      </div>
+                    ) : null}
+                    <details className="rounded border border-stone-200 bg-stone-50 p-2">
+                      <summary className="cursor-pointer select-none text-xs font-semibold text-stone-700">
+                        원본 캡션 펼치기
+                      </summary>
+                      <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded border border-stone-200 bg-white p-2 text-xs text-stone-700">
+                        {detail.caption_raw || "-"}
+                      </pre>
+                    </details>
+                  </>
+                ) : (
+                  <div>
+                    <p className="mb-1 inline-flex items-center gap-1 text-xs font-semibold text-stone-700">
+                      <Pencil className="h-3.5 w-3.5" />
+                      리치 편집
+                    </p>
+                    <div className="space-y-2 rounded border border-stone-200 p-2">
                       <input
                         className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
-                        value={editCategoryName}
-                        onChange={(e) => setEditCategoryName(e.target.value)}
-                        placeholder="신규 카테고리명"
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        placeholder="제목"
                       />
-                    ) : null}
-                    {categoryOptionsLoading ? <p className="text-[11px] text-stone-500">카테고리 목록 로딩 중...</p> : null}
-                    {categoryOptionsError ? <p className="text-[11px] text-amber-700">목록 로드 실패: {categoryOptionsError}</p> : null}
-                    <input
-                      className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
-                      type="date"
-                      value={editEventDate}
-                      onChange={(e) => setEditEventDate(e.target.value)}
-                    />
-                    <textarea
-                      className="min-h-16 w-full rounded border border-stone-300 px-2 py-1 text-xs"
-                      value={editTags}
-                      onChange={(e) => setEditTags(e.target.value)}
-                      placeholder="태그(쉼표 또는 줄바꿈)"
-                    />
-                    <select
-                      className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
-                      value={editReviewStatus}
-                      onChange={(e) => setEditReviewStatus(e.target.value as ReviewStatus)}
-                    >
-                      <option value="NONE">{reviewStatusLabel("NONE")}</option>
-                      <option value="NEEDS_REVIEW">{reviewStatusLabel("NEEDS_REVIEW")}</option>
-                      <option value="RESOLVED">{reviewStatusLabel("RESOLVED")}</option>
-                    </select>
+                      <select
+                        className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
+                        value={isCustomCategory ? "__custom__" : editCategoryName}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          if (value === "__custom__") {
+                            setIsCustomCategory(true);
+                            return;
+                          }
+                          setIsCustomCategory(false);
+                          setEditCategoryName(value);
+                        }}
+                      >
+                        <option value="">카테고리 선택</option>
+                        {categoryOptions.map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                        <option value="__custom__">직접 입력</option>
+                      </select>
+                      {isCustomCategory ? (
+                        <input
+                          className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
+                          value={editCategoryName}
+                          onChange={(e) => setEditCategoryName(e.target.value)}
+                          placeholder="신규 카테고리명"
+                        />
+                      ) : null}
+                      {categoryOptionsLoading ? <p className="text-[11px] text-stone-500">카테고리 목록 로딩 중...</p> : null}
+                      {categoryOptionsError ? <p className="text-[11px] text-amber-700">목록 로드 실패: {categoryOptionsError}</p> : null}
+                      <input
+                        className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
+                        type="date"
+                        value={editEventDate}
+                        onChange={(e) => setEditEventDate(e.target.value)}
+                      />
+                      <SafeRichContentEditor value={editDescriptionHtml} onChange={setEditDescriptionHtml} minHeightClassName="min-h-[240px]" />
+                      <textarea
+                        className="min-h-16 w-full rounded border border-stone-300 px-2 py-1 text-xs"
+                        value={editSummary}
+                        onChange={(e) => setEditSummary(e.target.value)}
+                        placeholder="요약 (직접 수정)"
+                      />
+                      <textarea
+                        className="min-h-16 w-full rounded border border-stone-300 px-2 py-1 text-xs"
+                        value={editTags}
+                        onChange={(e) => setEditTags(e.target.value)}
+                        placeholder="태그(쉼표 또는 줄바꿈)"
+                      />
+                      <label className="inline-flex items-center gap-2 rounded border border-stone-300 bg-stone-50 px-2 py-1 text-xs text-stone-700">
+                        <input
+                          type="checkbox"
+                          checked={editIsPinned}
+                          onChange={(e) => setEditIsPinned(e.target.checked)}
+                        />
+                        고정글로 설정 (대시보드 상단 노출)
+                      </label>
+                      <select
+                        className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
+                        value={editReviewStatus}
+                        onChange={(e) => setEditReviewStatus(e.target.value as ReviewStatus)}
+                      >
+                        <option value="NONE">{reviewStatusLabel("NONE")}</option>
+                        <option value="NEEDS_REVIEW">{reviewStatusLabel("NEEDS_REVIEW")}</option>
+                        <option value="RESOLVED">{reviewStatusLabel("RESOLVED")}</option>
+                      </select>
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <p className="mb-1 inline-flex items-center gap-1 text-xs font-semibold text-stone-700">
-                    <AlignLeft className="h-3.5 w-3.5" />
-                    요약
-                  </p>
-                  <p className="text-xs text-stone-700">{detail.summary || "-"}</p>
-                </div>
-                <div>
-                  <p className="mb-1 inline-flex items-center gap-1 text-xs font-semibold text-stone-700">
-                    <FileText className="h-3.5 w-3.5" />
-                    원본 캡션
-                  </p>
-                  <pre className="max-h-36 overflow-auto whitespace-pre-wrap rounded border border-stone-200 bg-stone-50 p-2 text-xs text-stone-700">
-                    {detail.caption_raw || "-"}
-                  </pre>
-                </div>
+                )}
               </div>
             ) : null}
 
             {detailTab === "files" ? (
               <div className="space-y-3">
+                <div>
+                  <p className="mb-1 inline-flex items-center gap-1 text-xs font-semibold text-stone-700">
+                    <Paperclip className="h-3.5 w-3.5" />
+                    파일 추가
+                  </p>
+                  <div className="space-y-2 rounded border border-stone-200 p-2">
+                    <input
+                      key={addInputKey}
+                      className="w-full rounded border border-stone-300 px-2 py-1 text-xs"
+                      type="file"
+                      multiple
+                      onChange={(e) => setAddUploads(Array.from(e.target.files ?? []))}
+                    />
+                    {addUploads.length > 0 ? (
+                      <p className="line-clamp-3 break-all text-[11px] text-stone-600">
+                        {addUploads.map((file) => file.name).join(", ")}
+                      </p>
+                    ) : null}
+                    <button
+                      className="rounded border border-stone-300 px-2 py-1 text-xs hover:bg-stone-50 disabled:opacity-50"
+                      onClick={() => void addDetailFiles()}
+                      disabled={docActionLoading || Boolean(fileActionLoadingId) || addUploads.length === 0}
+                    >
+                      {fileActionLoadingId === "__add__" ? "추가 중..." : `선택 파일 ${addUploads.length || 0}개 추가`}
+                    </button>
+                  </div>
+                </div>
                 <div>
                   <p className="mb-1 inline-flex items-center gap-1 text-xs font-semibold text-stone-700">
                     <RefreshCcw className="h-3.5 w-3.5" />
@@ -1873,7 +2100,7 @@ export function ArchiveWorkspace() {
                       >
                         {detail.files.map((file) => (
                           <option key={`${detail.id}-replace-${file.id}`} value={file.id}>
-                            {fileExtensionLabel(file.original_filename)}
+                            {file.original_filename}
                           </option>
                         ))}
                       </select>
@@ -1904,12 +2131,13 @@ export function ArchiveWorkspace() {
                       <li key={file.id} className="rounded border border-stone-200 p-2 text-xs">
                         <div className="flex items-start justify-between gap-2">
                           <a
-                            className="inline-flex items-center gap-1 break-all font-medium text-blue-700 hover:underline"
+                            className="inline-flex min-w-0 items-center gap-1 break-all font-medium text-blue-700 hover:underline"
                             href={fileDownloadUrl(file.download_path, file.id)}
                             target="_blank"
                             rel="noreferrer"
                           >
                             <FileTypeBadge filename={file.original_filename} mimeType={file.mime_type} />
+                            <span className="truncate">{file.original_filename}</span>
                           </a>
                           <button
                             className="rounded border border-red-300 px-2 py-0.5 text-[11px] text-red-700 hover:bg-red-50 disabled:opacity-50"
@@ -1969,15 +2197,17 @@ export function ArchiveWorkspace() {
                     <div className="mt-2 grid gap-2 md:grid-cols-2">
                       <div className="rounded border border-stone-200 bg-white p-2">
                         <p className="mb-1 font-semibold text-stone-700">설명</p>
-                        <pre className="max-h-28 overflow-auto whitespace-pre-wrap text-[11px] text-stone-700">
-                          {versionSnapshot.description || "-"}
-                        </pre>
+                        <RichContentView
+                          html={normalizeRichContentHtml(versionSnapshot.description || "-")}
+                          className="max-h-28 overflow-auto text-[11px]"
+                        />
                       </div>
                       <div className="rounded border border-stone-200 bg-white p-2">
                         <p className="mb-1 font-semibold text-stone-700">요약</p>
-                        <pre className="max-h-28 overflow-auto whitespace-pre-wrap text-[11px] text-stone-700">
-                          {versionSnapshot.summary || "-"}
-                        </pre>
+                        <RichContentView
+                          html={normalizeRichContentHtml(versionSnapshot.summary || "-")}
+                          className="max-h-28 overflow-auto text-[11px]"
+                        />
                       </div>
                     </div>
                   </div>

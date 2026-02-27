@@ -10,6 +10,8 @@ from app.db.session import get_db
 from app.schemas.dashboard import (
     DashboardCategoryCount,
     DashboardErrorCodeCount,
+    DashboardPinnedCategory,
+    DashboardPinnedDocument,
     DashboardRecentDocument,
     DashboardSummaryResponse,
 )
@@ -24,6 +26,8 @@ def _now() -> datetime:
 @router.get("/dashboard/summary", response_model=DashboardSummaryResponse)
 def get_dashboard_summary(
     recent_limit: int = Query(10, ge=1, le=50),
+    pinned_per_category: int = Query(5, ge=1, le=20),
+    pinned_category_limit: int = Query(20, ge=1, le=100),
     _: CurrentUser = Depends(require_roles(UserRole.VIEWER, UserRole.REVIEWER, UserRole.EDITOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ) -> DashboardSummaryResponse:
@@ -77,6 +81,58 @@ def get_dashboard_summary(
     ).all()
     categories = [DashboardCategoryCount(category=row.category, count=row.count) for row in category_rows]
 
+    pinned_category_label = func.coalesce(Category.name, literal("미분류")).label("category")
+    pinned_rows = db.execute(
+        select(
+            Document.id,
+            Document.title,
+            Document.event_date,
+            Document.ingested_at,
+            Document.review_status,
+            pinned_category_label,
+        )
+        .select_from(Document)
+        .outerjoin(Category, Category.id == Document.category_id)
+        .where(Document.is_pinned.is_(True))
+        .order_by(
+            pinned_category_label.asc(),
+            Document.pinned_at.desc().nullslast(),
+            Document.ingested_at.desc(),
+        )
+        .limit(max(200, pinned_per_category * pinned_category_limit * 2))
+    ).all()
+
+    pinned_by_category: list[DashboardPinnedCategory] = []
+    pinned_map: dict[str, list[DashboardPinnedDocument]] = {}
+    pinned_counts: dict[str, int] = {}
+    for row in pinned_rows:
+        pinned_counts[row.category] = pinned_counts.get(row.category, 0) + 1
+        docs = pinned_map.setdefault(row.category, [])
+        if len(docs) >= pinned_per_category:
+            continue
+        docs.append(
+            DashboardPinnedDocument(
+                id=row.id,
+                title=row.title,
+                category=row.category,
+                event_date=row.event_date,
+                ingested_at=row.ingested_at,
+                review_status=row.review_status,
+            )
+        )
+
+    for category_name in sorted(pinned_map.keys()):
+        docs = pinned_map[category_name]
+        pinned_by_category.append(
+            DashboardPinnedCategory(
+                category=category_name,
+                count=pinned_counts.get(category_name, len(docs)),
+                documents=docs,
+            )
+        )
+        if len(pinned_by_category) >= pinned_category_limit:
+            break
+
     recent_rows = db.execute(
         select(
             Document.id,
@@ -112,6 +168,7 @@ def get_dashboard_summary(
         dead_letter_count=dead_letter_count,
         failed_error_codes=failed_error_codes,
         categories=categories,
+        pinned_by_category=pinned_by_category,
         recent_documents=recent_documents,
         generated_at=now,
     )

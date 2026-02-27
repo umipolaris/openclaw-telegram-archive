@@ -181,6 +181,8 @@ class Document(Base):
     category_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("categories.id"))
     event_date: Mapped[date | None] = mapped_column(Date)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    is_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     review_status: Mapped[ReviewStatus] = mapped_column(Enum(ReviewStatus, name="review_status"), nullable=False, default=ReviewStatus.NONE)
     review_reasons: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     current_version_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

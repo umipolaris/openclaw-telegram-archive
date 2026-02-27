@@ -66,6 +66,7 @@ from app.services.storage_minio import (
     get_minio_client,
     put_file_from_path as put_file_minio_from_path,
 )
+from app.services.summary_service import build_summary_from_document_fields
 
 router = APIRouter()
 _UPLOAD_TMP_DIR = Path(tempfile.gettempdir()) / "doc-archive-upload"
@@ -196,7 +197,11 @@ def _get_document_files(db: Session, document_id: UUID) -> list[DocumentFileItem
         select(StoredFile)
         .join(DocumentFile, DocumentFile.file_id == StoredFile.id)
         .where(DocumentFile.document_id == document_id)
-        .order_by(DocumentFile.created_at.desc())
+        .order_by(
+            func.lower(StoredFile.original_filename).asc(),
+            StoredFile.original_filename.asc(),
+            StoredFile.id.asc(),
+        )
     )
     rows = db.execute(stmt).scalars().all()
     return [
@@ -226,7 +231,12 @@ def _get_document_file_previews(
         select(DocumentFile.document_id, StoredFile.id, StoredFile.original_filename)
         .join(StoredFile, StoredFile.id == DocumentFile.file_id)
         .where(DocumentFile.document_id.in_(document_ids))
-        .order_by(DocumentFile.document_id.asc(), DocumentFile.created_at.desc())
+        .order_by(
+            DocumentFile.document_id.asc(),
+            func.lower(StoredFile.original_filename).asc(),
+            StoredFile.original_filename.asc(),
+            StoredFile.id.asc(),
+        )
     ).all()
 
     counts: dict[UUID, int] = {}
@@ -396,6 +406,8 @@ def _to_document_detail_response(db: Session, doc: Document) -> DocumentDetailRe
         category=category.name if category else None,
         event_date=doc.event_date,
         ingested_at=doc.ingested_at,
+        is_pinned=bool(doc.is_pinned),
+        pinned_at=doc.pinned_at,
         review_status=doc.review_status,
         review_reasons=doc.review_reasons,
         current_version_no=doc.current_version_no,
@@ -633,6 +645,8 @@ def list_documents(
                         category=category_names.get(doc.id),
                         event_date=doc.event_date,
                         ingested_at=doc.ingested_at,
+                        is_pinned=bool(doc.is_pinned),
+                        pinned_at=doc.pinned_at,
                         last_modified_at=last_modified_map.get(doc.id, doc.updated_at or doc.created_at or doc.ingested_at),
                         tags=tags_map.get(doc.id, []),
                         file_count=file_counts.get(doc.id, 0),
@@ -709,6 +723,8 @@ def list_documents(
                 category=category_names.get(doc.id),
                 event_date=doc.event_date,
                 ingested_at=doc.ingested_at,
+                is_pinned=bool(doc.is_pinned),
+                pinned_at=doc.pinned_at,
                 last_modified_at=last_modified_map.get(doc.id, doc.updated_at or doc.created_at or doc.ingested_at),
                 tags=tags_map.get(doc.id, []),
                 file_count=file_counts.get(doc.id, 0),
@@ -805,6 +821,8 @@ def create_manual_post(
         category_id=category_id,
         event_date=req.event_date,
         ingested_at=ingested_at,
+        is_pinned=req.is_pinned,
+        pinned_at=ingested_at if req.is_pinned else None,
         review_status=req.review_status,
         review_reasons=[],
         current_version_no=1,
@@ -843,6 +861,7 @@ def create_manual_post(
                 "title": doc.title,
                 "category_id": str(doc.category_id) if doc.category_id else None,
                 "event_date": doc.event_date.isoformat() if doc.event_date else None,
+                "is_pinned": bool(doc.is_pinned),
                 "tags": [tag.name for tag in tag_rows],
             },
         )
@@ -1116,8 +1135,11 @@ def patch_document(
     before = {
         "title": doc.title,
         "description": doc.description,
+        "summary": doc.summary,
         "category_id": doc.category_id,
         "event_date": doc.event_date,
+        "is_pinned": bool(doc.is_pinned),
+        "pinned_at": doc.pinned_at,
         "review_status": doc.review_status,
     }
 
@@ -1128,8 +1150,20 @@ def patch_document(
         doc.title = req.title.strip()
     if "description" in fields_set:
         doc.description = req.description or ""
+    if "summary" in fields_set:
+        doc.summary = req.summary or ""
+    elif "title" in fields_set or "description" in fields_set:
+        doc.summary = build_summary_from_document_fields(doc.title, doc.description)
     if "event_date" in fields_set:
         doc.event_date = req.event_date
+    if "is_pinned" in fields_set and req.is_pinned is not None:
+        if req.is_pinned:
+            doc.is_pinned = True
+            if doc.pinned_at is None:
+                doc.pinned_at = _now()
+        else:
+            doc.is_pinned = False
+            doc.pinned_at = None
     if "review_status" in fields_set and req.review_status is not None:
         doc.review_status = req.review_status
 
@@ -1177,15 +1211,21 @@ def patch_document(
             before_json={
                 "title": before["title"],
                 "description": before["description"],
+                "summary": before["summary"],
                 "category_id": str(before["category_id"]) if before["category_id"] else None,
                 "event_date": before["event_date"].isoformat() if before["event_date"] else None,
+                "is_pinned": before["is_pinned"],
+                "pinned_at": before["pinned_at"].isoformat() if before["pinned_at"] else None,
                 "review_status": before["review_status"].value,
             },
             after_json={
                 "title": doc.title,
                 "description": doc.description,
+                "summary": doc.summary,
                 "category_id": str(doc.category_id) if doc.category_id else None,
                 "event_date": doc.event_date.isoformat() if doc.event_date else None,
+                "is_pinned": bool(doc.is_pinned),
+                "pinned_at": doc.pinned_at.isoformat() if doc.pinned_at else None,
                 "review_status": doc.review_status.value,
                 "tags": tags_snapshot,
             },
