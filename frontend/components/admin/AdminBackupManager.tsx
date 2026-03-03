@@ -467,6 +467,10 @@ export function AdminBackupManager() {
         <div className="space-y-4">
           <div className="rounded border border-stone-200 p-2">
             <p className="mb-1 text-xs font-semibold">DB 복구 (별도 대상 DB)</p>
+            <p className="mb-2 text-[11px] text-amber-700">
+              웹 복구는 운영 DB(`archive`)를 직접 덮어쓰지 않습니다. 복구 후 서비스 반영은 `make promote-db SOURCE_DB=&lt;복구DB&gt; CONFIRM=YES`
+              를 실행하세요.
+            </p>
             <div className="grid gap-2 md:grid-cols-[1fr_180px_auto]">
               <select className="rounded border border-stone-300 px-2 py-1.5 text-xs" value={dbFilename} onChange={(e) => setDbFilename(e.target.value)}>
                 <option value="">백업 파일 선택</option>

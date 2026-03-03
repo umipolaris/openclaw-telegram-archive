@@ -409,6 +409,7 @@ Docker Compose는 운영 데이터(파일/DB/캐시/검색인덱스)를 `infra/d
 - 복구는 DB/첨부/설정 각각 별도 실행
   - 설정은 `preview/apply` 모드 지원
   - 서버에 없는 백업 파일도 업로드 즉시 복구(`업로드 후 복구`) 지원
+  - DB 웹 복구는 안전상 별도 DB(`target_db`)로만 복원됨(운영 DB 직접 덮어쓰기 방지)
 
 CLI 기준:
 ```bash
@@ -471,6 +472,18 @@ curl -X POST -b /tmp/archive.cookie \
   -F "file=@./config_backup.tar.gz" \
   -F "mode=preview" \
   "http://localhost:8000/api/admin/backups/upload-and-restore/config"
+```
+
+웹 DB 복구 후 아카이브가 비어 보이는 경우(중요):
+- 대부분 `target_db`로는 복구됐지만 앱이 여전히 `archive`를 보고 있는 상황입니다.
+- 복구 DB를 운영 DB로 전환:
+```bash
+make promote-db SOURCE_DB=archive_restore_test CONFIRM=YES
+```
+- 점검:
+```bash
+cd infra
+./scripts/compose.sh exec -T postgres psql -U archive -d archive -Atc "SELECT count(*) FROM documents;"
 ```
 
 ## 읽기 전용 모드 (cut-over/점검용)

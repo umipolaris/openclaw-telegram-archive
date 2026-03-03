@@ -4,7 +4,7 @@ APP_PROFILE ?= dev
 ADMIN_USER ?= admin
 ADMIN_PASS ?= ChangeMe123!
 
-.PHONY: doctor up down restart ps logs health wait-api first-run bootstrap-admin install-hooks guard-staged guard-all backup-db backup-objects backup-config backup-all restore-db restore-objects restore-config
+.PHONY: doctor up down restart ps logs health wait-api first-run bootstrap-admin install-hooks guard-staged guard-all backup-db backup-objects backup-config backup-all restore-db restore-objects restore-config promote-db
 
 doctor:
 	@./infra/scripts/doctor.sh
@@ -88,3 +88,10 @@ restore-config:
 	  exit 1; \
 	fi
 	@cd infra && APP_PROFILE=$(APP_PROFILE) MODE=$(MODE) CONFIRM=$(CONFIRM) ./scripts/restore-config.sh "$(BACKUP_FILE)"
+
+promote-db:
+	@if [ -z "$(SOURCE_DB)" ]; then \
+	  echo "Usage: make promote-db SOURCE_DB=archive_restore_test CONFIRM=YES"; \
+	  exit 1; \
+	fi
+	@cd infra && APP_PROFILE=$(APP_PROFILE) CONFIRM=$(CONFIRM) ACTIVE_DB=$(ACTIVE_DB) ./scripts/db-promote-restore.sh "$(SOURCE_DB)"
