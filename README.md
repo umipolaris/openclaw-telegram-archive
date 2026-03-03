@@ -150,7 +150,111 @@ curl -X POST http://localhost:8000/api/admin/users \
 - `curl`
 - 선택: `make` (없어도 `./scripts/quickstart.sh` 사용 가능)
 
-## 빠른 시작
+## 설치 가이드 (초보자)
+이 프로젝트는 Docker로 실행되며, Python/Node/PostgreSQL/Redis/MinIO를 로컬에 따로 설치할 필요가 없습니다.
+
+### 0) 준비물 체크
+- Git(권장) 또는 ZIP 다운로드
+- Docker Desktop(Windows/macOS) 또는 Docker Engine(Linux)
+- Docker Compose
+- Windows는 WSL2 환경에서 실행하는 것을 권장합니다(권한/성능/경로 이슈 최소화).
+
+### 1) 프로젝트 받기
+아래 중 한 가지로 받으면 됩니다.
+
+1) Git으로 받기(권장)
+```bash
+git clone https://github.com/umipolaris/openclaw-telegram-archive.git
+cd openclaw-telegram-archive
+```
+
+2) ZIP으로 받기
+- GitHub에서 `Code > Download ZIP`으로 다운로드 후 압축 해제
+- 압축 해제한 폴더 안에 `backend/`, `frontend/`, `infra/` 폴더가 보이면 정상입니다.
+
+### 2) Docker가 정상인지 확인
+Docker가 실행 중인지 확인합니다.
+
+```bash
+docker version
+docker compose version
+```
+
+만약 `docker compose`가 없다면(구형 환경):
+```bash
+docker-compose version
+```
+
+### 3) 실행(개발 프로필: dev)
+아래 둘 중 편한 방법을 선택하세요.
+
+1) `make`가 있는 경우(가장 간단)
+```bash
+make first-run
+```
+
+2) `make`가 없는 경우(직접 compose 실행)
+```bash
+cd infra
+docker compose up -d --build
+```
+
+Windows PowerShell에서 `./scripts/*.sh`가 안 돌아가면:
+- WSL2(Ubuntu) 터미널에서 위 명령을 실행하거나,
+- PowerShell에서 `docker compose ...`만 사용하세요.
+
+### 4) 초기 관리자 계정 생성(최초 1회)
+기본 계정 예시(`admin` / `ChangeMe123!`)로 생성합니다.
+
+1) `make` 사용
+```bash
+make bootstrap-admin ADMIN_USER=admin ADMIN_PASS='ChangeMe123!'
+```
+
+2) `docker compose` 직접 실행(Windows PowerShell 포함)
+```bash
+cd infra
+docker compose exec -T api python scripts/bootstrap_admin.py --username admin --password "ChangeMe123!"
+```
+
+### 5) 접속 확인
+- 프론트: `http://localhost:3000/archive`
+- API 헬스: `http://localhost:8000/api/health`
+- MinIO Console: `http://localhost:9001`
+- Prometheus: `http://localhost:9090`
+
+### 6) 종료/재시작
+```bash
+# 로그 보기
+cd infra
+docker compose logs -f --tail=200
+
+# 종료(데이터 유지)
+docker compose down
+
+# 재시작
+docker compose up -d --build
+```
+
+### 7) 완전 초기화(선택)
+모든 데이터를 지우고 처음부터 시작하려면:
+1) 스택 종료: `cd infra && docker compose down`
+2) 데이터 삭제: `infra/data/*` 폴더 삭제
+
+### 8) 자주 겪는 문제(FAQ)
+1) `unknown shorthand flag: 'd' in -d` 또는 `compose` 관련 오류
+- `docker compose version`이 정상 출력되는지 확인하세요.
+- Docker Desktop이 실행 중인지 확인하세요(Windows/macOS).
+
+2) 페이지가 안 뜨는 경우
+- `cd infra && docker compose ps`로 컨테이너가 `Up`인지 확인
+- `docker compose logs -f api` / `docker compose logs -f frontend`로 에러 확인
+
+3) 포트 충돌(이미 다른 프로그램이 쓰는 경우)
+- 기본 포트: `3000(프론트)`, `8000(API)`, `5432(Postgres)`, `9000/9001(MinIO)`, `6379(Redis)`, `7700(Meili)`, `9090(Prometheus)`
+- 이미 사용 중이면 해당 프로그램을 종료하거나 compose 포트를 변경해야 합니다.
+
+## 빠른 시작(요약)
 아래 순서만 실행하면 됩니다.
 
 ```bash
