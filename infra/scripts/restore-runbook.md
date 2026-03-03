@@ -11,7 +11,7 @@
 ## 2) 첨부파일(Object) 복구
 1. 백업 파일 확인 (`infra/data/backup/objects/*.tar.gz`)
 2. 실행:
-   - `make restore-objects BACKUP_FILE=./infra/data/backup/objects/objects_minio_YYYYMMDD_HHMMSS.tar.gz CONFIRM=YES`
+   - `make restore-objects BACKUP_FILE=./infra/data/backup/objects/objects_snapshot_minio_YYYYMMDD_HHMMSS.tar.gz CONFIRM=YES`
 3. 점검:
    - 샘플 문서 다운로드/뷰어 열기
    - MinIO 데이터 폴더 용량/파일 수 확인

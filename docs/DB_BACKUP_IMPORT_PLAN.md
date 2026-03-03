@@ -15,7 +15,7 @@
 - 설정 백업: `make backup-config`
 - 전체 백업: `make backup-all`
 - DB 복구(import): `make restore-db BACKUP_FILE=./infra/data/backup/db/archive_YYYYMMDD_HHMMSS.dump CONFIRM=YES`
-- 첨부 복구(import): `make restore-objects BACKUP_FILE=./infra/data/backup/objects/objects_minio_YYYYMMDD_HHMMSS.tar.gz CONFIRM=YES`
+- 첨부 복구(import): `make restore-objects BACKUP_FILE=./infra/data/backup/objects/objects_snapshot_minio_YYYYMMDD_HHMMSS.tar.gz CONFIRM=YES`
 - 설정 복구(import): `make restore-config BACKUP_FILE=./infra/data/backup/config/config_YYYYMMDD_HHMMSS.tar.gz MODE=preview`
 
 추가 스크립트:
@@ -35,8 +35,9 @@
 
 첨부파일 백업:
 - 경로: `infra/data/backup/objects`
-- 파일명: `objects_<label>_<YYYYMMDD_HHMMSS>.tar.gz` (`label=minio|disk`)
+- 파일명: `objects_snapshot_<label>_<YYYYMMDD_HHMMSS>.tar.gz` (`label=minio|disk`)
 - 메타 파일: `<tar>.meta`
+- 비고: CLI 스냅샷 포맷(볼륨 기반)이며, Admin 웹 객체 복구 API는 API 포맷 백업만 지원
 
 설정파일 백업:
 - 경로: `infra/data/backup/config`

@@ -77,7 +77,7 @@ restore-db:
 
 restore-objects:
 	@if [ -z "$(BACKUP_FILE)" ]; then \
-	  echo "Usage: make restore-objects BACKUP_FILE=./infra/data/backup/objects/objects_minio_YYYYMMDD_HHMMSS.tar.gz CONFIRM=YES"; \
+	  echo "Usage: make restore-objects BACKUP_FILE=./infra/data/backup/objects/objects_snapshot_minio_YYYYMMDD_HHMMSS.tar.gz CONFIRM=YES"; \
 	  exit 1; \
 	fi
 	@cd infra && APP_PROFILE=$(APP_PROFILE) CONFIRM=$(CONFIRM) TARGET_DIR=$(TARGET_DIR) ./scripts/restore-objects.sh "$(BACKUP_FILE)"

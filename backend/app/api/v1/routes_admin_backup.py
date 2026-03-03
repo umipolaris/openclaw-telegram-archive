@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser, require_roles
 from app.core.config import get_settings
-from app.db.models import AuditLog, UserRole
+from app.db.models import AuditLog, Document, DocumentComment, DocumentFile, DocumentTag, DocumentVersion, File, UserRole
 from app.db.session import get_db
 from app.schemas.admin_backup import (
     BackupDeleteResponse,
@@ -29,7 +31,6 @@ from app.services.backup_service import (
     restore_db_backup,
     restore_objects_backup,
 )
-from sqlalchemy.orm import Session
 
 router = APIRouter()
 
@@ -53,6 +54,27 @@ def _create_backup_for_kind(kind: BackupKind) -> BackupRunResponse:
         created_at=created.created_at,
         sha256=created.sha256,
     )
+
+
+def _capture_consistency_marker(db: Session) -> dict[str, int | str | None]:
+    return {
+        "documents_count": int(db.execute(select(func.count()).select_from(Document)).scalar_one() or 0),
+        "documents_max_updated_at": str(db.execute(select(func.max(Document.updated_at))).scalar_one() or ""),
+        "files_count": int(db.execute(select(func.count()).select_from(File)).scalar_one() or 0),
+        "files_max_updated_at": str(db.execute(select(func.max(File.updated_at))).scalar_one() or ""),
+        "document_versions_count": int(db.execute(select(func.count()).select_from(DocumentVersion)).scalar_one() or 0),
+        "document_files_count": int(db.execute(select(func.count()).select_from(DocumentFile)).scalar_one() or 0),
+        "document_tags_count": int(db.execute(select(func.count()).select_from(DocumentTag)).scalar_one() or 0),
+        "document_comments_count": int(db.execute(select(func.count()).select_from(DocumentComment)).scalar_one() or 0),
+    }
+
+
+def _safe_cleanup_artifacts(settings, artifacts: list[tuple[BackupKind, str]]) -> None:  # type: ignore[no-untyped-def]
+    for kind, filename in artifacts:
+        try:
+            delete_backup_file(settings, kind, filename)
+        except Exception:  # noqa: BLE001
+            continue
 
 
 @router.get(
@@ -162,11 +184,29 @@ def run_backup_all(
     current_user: CurrentUser = Depends(require_roles(UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ) -> BackupRunAllResponse:
+    settings = get_settings()
+    marker_before = _capture_consistency_marker(db)
     results: list[BackupRunResponse] = []
+    created_artifacts: list[tuple[BackupKind, str]] = []
+
     for kind in ("db", "objects", "config"):
         try:
-            results.append(_create_backup_for_kind(kind))  # type: ignore[arg-type]
+            created = _create_backup_for_kind(kind)  # type: ignore[arg-type]
+            results.append(created)
+            created_artifacts.append((created.kind, created.filename))
+            marker_after = _capture_consistency_marker(db)
+            if marker_after != marker_before:
+                _safe_cleanup_artifacts(settings, created_artifacts)
+                raise HTTPException(
+                    status_code=409,
+                    detail="backup consistency window violated: database changed during run-all; retry in low-traffic window",
+                )
+            marker_before = marker_after
+            db.rollback()
+        except HTTPException:
+            raise
         except Exception as exc:  # noqa: BLE001
+            _safe_cleanup_artifacts(settings, created_artifacts)
             raise HTTPException(status_code=500, detail=f"{kind} backup failed: {exc}") from exc
 
     db.add(
@@ -191,6 +231,10 @@ def restore_backup_db(
         raise HTTPException(status_code=400, detail="confirm=true required")
     try:
         restored_target = restore_db_backup(get_settings(), filename=req.filename, target_db=req.target_db)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -221,6 +265,12 @@ def restore_backup_objects(
             filename=req.filename,
             replace_existing=req.replace_existing,
         )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -252,6 +302,12 @@ def restore_backup_config(
         raise HTTPException(status_code=400, detail="confirm=true required for apply mode")
     try:
         preview = restore_config_backup(get_settings(), filename=req.filename, mode=req.mode)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

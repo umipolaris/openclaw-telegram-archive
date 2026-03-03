@@ -268,9 +268,13 @@ make backup-all
 
 # 복구 (확인 플래그 필요)
 make restore-db BACKUP_FILE=./infra/data/backup/db/archive_archive_YYYYMMDD_HHMMSS.dump CONFIRM=YES
-make restore-objects BACKUP_FILE=./infra/data/backup/objects/objects_YYYYMMDD_HHMMSS.tar.gz CONFIRM=YES
+make restore-objects BACKUP_FILE=./infra/data/backup/objects/objects_snapshot_minio_YYYYMMDD_HHMMSS.tar.gz CONFIRM=YES
 make restore-config BACKUP_FILE=./infra/data/backup/config/config_YYYYMMDD_HHMMSS.tar.gz MODE=preview
 ```
+
+주의:
+- Admin 웹 복구(`/api/admin/backups/restore/objects`)는 API가 생성한 첨부 백업(`kind=objects`)만 지원합니다.
+- `make backup-objects`로 생성되는 `objects_snapshot_*` 파일은 CLI 복구(`make restore-objects`) 전용입니다.
 
 백업 API 예시(Admin 세션 필요):
 ```bash

@@ -9,8 +9,10 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Literal
 
+from minio.commonconfig import CopySource
 from sqlalchemy.engine import make_url
 
 from app.core.config import Settings
@@ -20,6 +22,9 @@ BackupKind = Literal["db", "objects", "config"]
 ConfigRestoreMode = Literal["preview", "apply"]
 
 _DB_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+_BACKUP_FORMAT = "archive-backup-v1"
+_OBJECTS_LAYOUT = "object-keys-v1"
+_PG_RESTORE_COMPAT_MSG = 'unrecognized configuration parameter "transaction_timeout"'
 
 
 @dataclass
@@ -107,6 +112,54 @@ def _resolve_backup_file(settings: Settings, kind: BackupKind, filename: str) ->
     return path
 
 
+def _meta_path(path: Path) -> Path:
+    return Path(f"{path}.meta")
+
+
+def _load_backup_meta(path: Path) -> dict[str, str]:
+    return _read_meta(_meta_path(path))
+
+
+def _normalize_archive_member_path(name: str) -> str:
+    normalized = PurePosixPath(name)
+    if normalized.is_absolute():
+        raise RuntimeError("unsafe archive path")
+    parts = normalized.parts
+    if not parts:
+        raise RuntimeError("empty archive member path")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise RuntimeError("unsafe archive path")
+    return "/".join(parts)
+
+
+def _verify_backup_checksum(path: Path, meta: dict[str, str], *, kind: BackupKind) -> None:
+    expected = meta.get("sha256")
+    if not expected:
+        raise RuntimeError(f"{kind} backup metadata missing sha256")
+    actual = _sha256(path)
+    if actual != expected:
+        raise RuntimeError(f"{kind} backup checksum mismatch for {path.name}")
+
+
+def _is_supported_object_backup_meta(meta: dict[str, str]) -> bool:
+    if meta.get("kind") != "objects":
+        return False
+
+    backup_format = meta.get("format")
+    objects_layout = meta.get("objects_layout")
+    if backup_format and backup_format != _BACKUP_FORMAT:
+        return False
+    if objects_layout and objects_layout != _OBJECTS_LAYOUT:
+        return False
+
+    # Legacy API backups had no explicit format/layout keys.
+    if not backup_format and not objects_layout:
+        if "storage_backend" not in meta and "bucket" not in meta:
+            return False
+
+    return True
+
+
 def list_backup_files(settings: Settings, kind: BackupKind, *, limit: int = 200) -> list[BackupFileInfo]:
     target_dir = _backup_dir(settings, kind)
     patterns = {
@@ -116,8 +169,10 @@ def list_backup_files(settings: Settings, kind: BackupKind, *, limit: int = 200)
     }
     pattern = patterns[kind]
     rows: list[BackupFileInfo] = []
-    for path in sorted(target_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
-        meta = _read_meta(Path(f"{path}.meta"))
+    for path in sorted(target_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True):
+        meta = _load_backup_meta(path)
+        if kind == "objects" and not _is_supported_object_backup_meta(meta):
+            continue
         rows.append(
             BackupFileInfo(
                 kind=kind,
@@ -127,6 +182,8 @@ def list_backup_files(settings: Settings, kind: BackupKind, *, limit: int = 200)
                 sha256=meta.get("sha256"),
             )
         )
+        if len(rows) >= limit:
+            break
     return rows
 
 
@@ -196,6 +253,7 @@ def create_db_backup(settings: Settings) -> BackupFileInfo:
         {
             "timestamp": ts,
             "kind": "db",
+            "format": _BACKUP_FORMAT,
             "file": out_file.name,
             "sha256": digest,
             "database": db_params["database"],
@@ -266,6 +324,8 @@ def create_objects_backup(settings: Settings) -> BackupFileInfo:
         {
             "timestamp": ts,
             "kind": "objects",
+            "format": _BACKUP_FORMAT,
+            "objects_layout": _OBJECTS_LAYOUT,
             "file": out_file.name,
             "sha256": digest,
             "storage_backend": settings.storage_backend,
@@ -311,6 +371,7 @@ def create_config_backup(settings: Settings) -> BackupFileInfo:
         {
             "timestamp": ts,
             "kind": "config",
+            "format": _BACKUP_FORMAT,
             "file": out_file.name,
             "sha256": digest,
             "config_root": str(config_root),
@@ -326,6 +387,101 @@ def create_config_backup(settings: Settings) -> BackupFileInfo:
     )
 
 
+def _quote_ident(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _cleanup_minio_prefix(client, bucket: str, prefix: str) -> None:  # type: ignore[no-untyped-def]
+    for obj in client.list_objects(bucket, recursive=True, prefix=prefix):
+        if obj.object_name:
+            client.remove_object(bucket, obj.object_name)
+
+
+def _remove_disk_objects_not_in_set(disk_root: Path, keep_rel_paths: set[str]) -> None:
+    for path in disk_root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(disk_root).as_posix()
+        if rel not in keep_rel_paths:
+            path.unlink(missing_ok=True)
+
+    for path in sorted(disk_root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.is_dir():
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+
+
+def _restore_db_compat_filtered_sql(
+    *,
+    source_path: Path,
+    db_params: dict[str, str],
+    target_db: str,
+    env: dict[str, str],
+) -> None:
+    dump_cmd = [
+        "pg_restore",
+        "--clean",
+        "--if-exists",
+        "--no-owner",
+        "--no-privileges",
+        "--file",
+        "-",
+        str(source_path),
+    ]
+    psql_cmd = [
+        "psql",
+        "-h",
+        db_params["host"],
+        "-p",
+        db_params["port"],
+        "-U",
+        db_params["user"],
+        "-d",
+        target_db,
+        "-v",
+        "ON_ERROR_STOP=1",
+    ]
+
+    try:
+        dump_proc = subprocess.Popen(dump_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        psql_proc = subprocess.Popen(psql_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    except FileNotFoundError as exc:
+        raise RuntimeError("pg_restore/psql not found; install postgresql-client in api image") from exc
+
+    assert dump_proc.stdout is not None
+    assert dump_proc.stderr is not None
+    assert psql_proc.stdin is not None
+    assert psql_proc.stderr is not None
+
+    broken_pipe = False
+    for line in dump_proc.stdout:
+        if line.strip().lower().startswith(b"set transaction_timeout"):
+            continue
+        try:
+            psql_proc.stdin.write(line)
+        except BrokenPipeError:
+            broken_pipe = True
+            break
+
+    try:
+        psql_proc.stdin.close()
+    except Exception:  # noqa: BLE001
+        pass
+    dump_proc.stdout.close()
+
+    dump_err = dump_proc.stderr.read()
+    psql_err = psql_proc.stderr.read()
+    dump_rc = dump_proc.wait()
+    psql_rc = psql_proc.wait()
+
+    if broken_pipe or dump_rc != 0 or psql_rc != 0:
+        dump_msg = dump_err.decode("utf-8", errors="ignore").strip()
+        psql_msg = psql_err.decode("utf-8", errors="ignore").strip()
+        raise RuntimeError(f"compat restore failed: pg_restore={dump_msg or dump_rc}, psql={psql_msg or psql_rc}")
+
+
 def restore_db_backup(settings: Settings, *, filename: str, target_db: str) -> str:
     if not _DB_NAME_PATTERN.fullmatch(target_db):
         raise ValueError("target_db must contain only letters, numbers, '_' or '-'")
@@ -336,8 +492,12 @@ def restore_db_backup(settings: Settings, *, filename: str, target_db: str) -> s
         raise ValueError("web restore cannot target current running database; use a separate target_db")
 
     source_path = _resolve_backup_file(settings, "db", filename)
+    meta = _load_backup_meta(source_path)
+    _verify_backup_checksum(source_path, meta, kind="db")
+
     env = dict(os.environ)
     env["PGPASSWORD"] = db_params["password"]
+    target_ident = _quote_ident(target_db)
 
     admin_cmd = [
         "psql",
@@ -354,9 +514,9 @@ def restore_db_backup(settings: Settings, *, filename: str, target_db: str) -> s
         "-c",
         f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='{target_db}' AND pid <> pg_backend_pid();",
         "-c",
-        f"DROP DATABASE IF EXISTS {target_db};",
+        f"DROP DATABASE IF EXISTS {target_ident};",
         "-c",
-        f"CREATE DATABASE {target_db};",
+        f"CREATE DATABASE {target_ident};",
     ]
     try:
         subprocess.run(admin_cmd, check=True, stderr=subprocess.PIPE, env=env)
@@ -388,13 +548,25 @@ def restore_db_backup(settings: Settings, *, filename: str, target_db: str) -> s
         raise RuntimeError("pg_restore not found; install postgresql-client in api image") from exc
     except subprocess.CalledProcessError as exc:
         err_text = (exc.stderr or b"").decode("utf-8", errors="ignore")
-        raise RuntimeError(f"pg_restore failed: {err_text.strip()}") from exc
+        if _PG_RESTORE_COMPAT_MSG in err_text:
+            _restore_db_compat_filtered_sql(
+                source_path=source_path,
+                db_params=db_params,
+                target_db=target_db,
+                env=env,
+            )
+        else:
+            raise RuntimeError(f"pg_restore failed: {err_text.strip()}") from exc
 
     return target_db
 
 
 def restore_objects_backup(settings: Settings, *, filename: str, replace_existing: bool) -> int:
     source_path = _resolve_backup_file(settings, "objects", filename)
+    meta = _load_backup_meta(source_path)
+    if not _is_supported_object_backup_meta(meta):
+        raise RuntimeError("unsupported objects backup format; use backups created by /admin/backups/run/objects")
+    _verify_backup_checksum(source_path, meta, kind="objects")
 
     if settings.storage_backend == "minio":
         client = get_minio_client(
@@ -404,57 +576,93 @@ def restore_objects_backup(settings: Settings, *, filename: str, replace_existin
             secure=settings.minio_secure,
         )
         ensure_bucket(client, settings.storage_bucket)
-        if replace_existing:
-            for obj in client.list_objects(settings.storage_bucket, recursive=True):
-                client.remove_object(settings.storage_bucket, obj.object_name)
-
+        stage_prefix = f"__restore_staging__/{_timestamp()}_{os.getpid()}/"
+        restored_keys: set[str] = set()
         restored = 0
-        with tarfile.open(source_path, "r:gz") as tar:
-            for member in tar.getmembers():
-                if not member.isfile():
-                    continue
-                stream = tar.extractfile(member)
-                if stream is None:
-                    continue
-                client.put_object(
-                    bucket_name=settings.storage_bucket,
-                    object_name=member.name,
-                    data=stream,
-                    length=member.size,
-                    part_size=10 * 1024 * 1024,
+        try:
+            with tarfile.open(source_path, "r:gz") as tar:
+                for member in tar.getmembers():
+                    if not member.isfile():
+                        continue
+                    object_name = _normalize_archive_member_path(member.name)
+                    stream = tar.extractfile(member)
+                    if stream is None:
+                        continue
+                    stage_object_name = f"{stage_prefix}{object_name}"
+                    client.put_object(
+                        bucket_name=settings.storage_bucket,
+                        object_name=stage_object_name,
+                        data=stream,
+                        length=member.size,
+                        part_size=10 * 1024 * 1024,
+                    )
+                    restored_keys.add(object_name)
+
+            for object_name in sorted(restored_keys):
+                client.copy_object(
+                    settings.storage_bucket,
+                    object_name,
+                    CopySource(settings.storage_bucket, f"{stage_prefix}{object_name}"),
                 )
                 restored += 1
+
+            if replace_existing:
+                for obj in client.list_objects(settings.storage_bucket, recursive=True):
+                    if not obj.object_name:
+                        continue
+                    if obj.object_name.startswith(stage_prefix):
+                        continue
+                    if obj.object_name not in restored_keys:
+                        client.remove_object(settings.storage_bucket, obj.object_name)
+        finally:
+            _cleanup_minio_prefix(client, settings.storage_bucket, stage_prefix)
         return restored
 
     disk_root = Path(settings.storage_disk_root)
     disk_root.mkdir(parents=True, exist_ok=True)
-    if replace_existing:
-        for child in disk_root.iterdir():
-            if child.is_dir():
-                shutil.rmtree(child)
-            else:
-                child.unlink(missing_ok=True)
-
+    stage_dir = Path(tempfile.mkdtemp(prefix="objects_restore_", dir=str(disk_root.parent)))
+    restored_rel_paths: set[str] = set()
     restored = 0
-    with tarfile.open(source_path, "r:gz") as tar:
-        for member in tar.getmembers():
-            if not member.isfile():
-                continue
-            target_path = (disk_root / member.name).resolve()
-            if disk_root.resolve() not in target_path.parents and target_path != disk_root.resolve():
-                raise RuntimeError("unsafe object archive path")
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            stream = tar.extractfile(member)
-            if stream is None:
-                continue
-            with target_path.open("wb") as out:
-                shutil.copyfileobj(stream, out, length=1024 * 1024)
+    try:
+        with tarfile.open(source_path, "r:gz") as tar:
+            for member in tar.getmembers():
+                if not member.isfile():
+                    continue
+                rel = _normalize_archive_member_path(member.name)
+                stage_path = (stage_dir / rel).resolve()
+                if stage_dir.resolve() not in stage_path.parents:
+                    raise RuntimeError("unsafe object archive path")
+                stage_path.parent.mkdir(parents=True, exist_ok=True)
+                stream = tar.extractfile(member)
+                if stream is None:
+                    continue
+                with stage_path.open("wb") as out:
+                    shutil.copyfileobj(stream, out, length=1024 * 1024)
+                restored_rel_paths.add(rel)
+
+        for rel in sorted(restored_rel_paths):
+            src = stage_dir / rel
+            dst = disk_root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=dst.parent, delete=False) as tmp:
+                with src.open("rb") as in_fp:
+                    shutil.copyfileobj(in_fp, tmp, length=1024 * 1024)
+                tmp_path = Path(tmp.name)
+            tmp_path.replace(dst)
             restored += 1
+
+        if replace_existing:
+            _remove_disk_objects_not_in_set(disk_root, restored_rel_paths)
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
     return restored
 
 
 def restore_config_backup(settings: Settings, *, filename: str, mode: ConfigRestoreMode) -> ConfigRestorePreview:
     source_path = _resolve_backup_file(settings, "config", filename)
+    meta = _load_backup_meta(source_path)
+    _verify_backup_checksum(source_path, meta, kind="config")
+
     config_root = Path(settings.backup_config_root).resolve()
     config_root.mkdir(parents=True, exist_ok=True)
 

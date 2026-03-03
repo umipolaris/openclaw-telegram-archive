@@ -31,7 +31,7 @@ sha256_file() {
 backup_dir() {
   label=$1
   source_dir=$2
-  out_file="$OUT_DIR/objects_${label}_${TS}.tar.gz"
+  out_file="$OUT_DIR/objects_snapshot_${label}_${TS}.tar.gz"
   meta_file="${out_file}.meta"
   tmp_file="${out_file}.tmp"
 
@@ -41,7 +41,9 @@ backup_dir() {
 
   {
     echo "timestamp=$TS"
-    echo "type=objects"
+    echo "kind=objects_snapshot"
+    echo "format=volume-snapshot-v1"
+    echo "snapshot_layout=raw-volume"
     echo "label=$label"
     echo "source_dir=$source_dir"
     echo "file=$(basename "$out_file")"

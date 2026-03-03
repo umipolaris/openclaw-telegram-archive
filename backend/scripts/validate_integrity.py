@@ -17,6 +17,7 @@ from app.core.config import get_settings
 from app.db.models import (
     Category,
     Document,
+    DocumentComment,
     DocumentFile,
     DocumentTag,
     DocumentVersion,
@@ -151,6 +152,7 @@ def table_counts(db: Session) -> dict[str, int]:
         "document_versions": int(db.execute(select(func.count()).select_from(DocumentVersion)).scalar_one() or 0),
         "document_files": int(db.execute(select(func.count()).select_from(DocumentFile)).scalar_one() or 0),
         "document_tags": int(db.execute(select(func.count()).select_from(DocumentTag)).scalar_one() or 0),
+        "document_comments": int(db.execute(select(func.count()).select_from(DocumentComment)).scalar_one() or 0),
         "ingest_jobs": int(db.execute(select(func.count()).select_from(IngestJob)).scalar_one() or 0),
         "ingest_events": int(db.execute(select(func.count()).select_from(IngestEvent)).scalar_one() or 0),
     }
@@ -285,6 +287,28 @@ def check_orphans(db: Session, report: IntegrityReport, max_samples: int) -> Non
             for row in rows
         ]
         report.add("ORPHAN_DOCUMENT_VERSION_DOCUMENT", SEV_ERROR, "document_versions.document_id가 유효하지 않습니다.", count, samples)
+
+    # document_comments.document_id -> documents.id
+    dc_doc_count_stmt = (
+        select(func.count())
+        .select_from(DocumentComment)
+        .outerjoin(Document, Document.id == DocumentComment.document_id)
+        .where(Document.id.is_(None))
+    )
+    dc_doc_sample_stmt = (
+        select(DocumentComment.id, DocumentComment.document_id)
+        .select_from(DocumentComment)
+        .outerjoin(Document, Document.id == DocumentComment.document_id)
+        .where(Document.id.is_(None))
+        .limit(max_samples)
+    )
+    count = int(db.execute(dc_doc_count_stmt).scalar_one() or 0)
+    if count > 0:
+        rows = db.execute(dc_doc_sample_stmt).all()
+        samples = [
+            f"document_comment_id={format_uuid_like(row.id)} document_id={format_uuid_like(row.document_id)}" for row in rows
+        ]
+        report.add("ORPHAN_DOCUMENT_COMMENT_DOCUMENT", SEV_ERROR, "document_comments.document_id가 유효하지 않습니다.", count, samples)
 
     # ingest_jobs.document_id -> documents.id
     job_doc_count_stmt = (
