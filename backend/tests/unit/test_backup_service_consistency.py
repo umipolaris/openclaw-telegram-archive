@@ -316,3 +316,77 @@ def test_restore_db_backup_fallback_for_transaction_timeout(tmp_path: Path, monk
     text = psql_sink.data.decode("utf-8", errors="ignore")
     assert "SET transaction_timeout = 0;" not in text
     assert "CREATE TABLE test_fallback (id int);" in text
+
+
+def test_restore_db_backup_cleans_target_db_when_restore_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    settings = _make_settings(tmp_path)
+    db_dir = Path(settings.backup_root) / "db"
+    backup_path = db_dir / "archive_archive_20260303_000006.dump"
+    _write_file_and_meta(backup_path, {"kind": "db"})
+
+    monkeypatch.setattr(
+        backup_service,
+        "_db_connection_params",
+        lambda _settings: {
+            "host": "localhost",
+            "port": "5432",
+            "user": "archive",
+            "password": "archive_pw",
+            "database": "archive",
+        },
+    )
+
+    commands: list[list[str]] = []
+    call_idx = {"value": 0}
+
+    def _fake_run(cmd, check, stderr, env):  # type: ignore[no-untyped-def]
+        commands.append(cmd)
+        call_idx["value"] += 1
+        if call_idx["value"] == 2:
+            raise subprocess.CalledProcessError(returncode=1, cmd=cmd, stderr=b"pg_restore: error: broken archive")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError, match="pg_restore failed"):
+        backup_service.restore_db_backup(settings, filename=backup_path.name, target_db="archive_restore_fail_cleanup")
+
+    assert len(commands) == 3
+    cleanup_cmd = commands[2]
+    assert 'DROP DATABASE IF EXISTS "archive_restore_fail_cleanup";' in cleanup_cmd
+
+
+def test_promote_restored_db_quotes_hyphenated_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    settings = _make_settings(tmp_path)
+    monkeypatch.setattr(
+        backup_service,
+        "_db_connection_params",
+        lambda _settings: {
+            "host": "localhost",
+            "port": "5432",
+            "user": "archive",
+            "password": "archive_pw",
+            "database": "archive",
+        },
+    )
+
+    commands: list[list[str]] = []
+
+    def _fake_run(cmd, check, stderr, env):  # type: ignore[no-untyped-def]
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    target = backup_service.promote_restored_db(settings, source_db="archive-restore-web")
+    assert target == "archive"
+    assert len(commands) == 1
+    admin_cmd = commands[0]
+    assert 'DROP DATABASE IF EXISTS "archive";' in admin_cmd
+    assert 'ALTER DATABASE "archive-restore-web" RENAME TO "archive";' in admin_cmd
+
+
+def test_promote_restored_db_rejects_same_source_and_active_db(tmp_path: Path):
+    settings = _make_settings(tmp_path)
+    with pytest.raises(ValueError, match="identical"):
+        backup_service.promote_restored_db(settings, source_db="archive")

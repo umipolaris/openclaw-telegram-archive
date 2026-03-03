@@ -44,6 +44,7 @@ class BackupRestoreDbRequest(BaseModel):
     filename: str
     target_db: str = "archive_restore"
     confirm: bool = False
+    promote_to_active: bool = False
 
 
 class BackupRestoreObjectsRequest(BaseModel):
@@ -62,6 +63,8 @@ class BackupRestoreDbResponse(BaseModel):
     status: str
     filename: str
     target_db: str
+    promoted: bool = False
+    promoted_from: str | None = None
 
 
 class BackupRestoreObjectsResponse(BaseModel):

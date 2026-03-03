@@ -16,6 +16,7 @@ from app.db.models import (
     UserRole,
 )
 from app.db.session import get_db
+from app.db.session import SessionLocal
 from app.schemas.admin_backup import (
     BackupDeleteResponse,
     BackupFilesResponse,
@@ -40,10 +41,46 @@ from app.services.backup_service import (
     restore_config_backup,
     restore_db_backup,
     restore_objects_backup,
+    promote_restored_db,
     store_uploaded_backup,
 )
 
 router = APIRouter()
+
+
+def _write_backup_restore_audit(
+    *,
+    actor_user_id,
+    action: str,
+    payload: dict,
+    db: Session,
+    force_new_session: bool,
+) -> None:
+    if force_new_session:
+        extra = SessionLocal()
+        try:
+            extra.add(
+                AuditLog(
+                    actor_user_id=actor_user_id,
+                    action=action,
+                    target_type="backup_restore",
+                    after_json=payload,
+                )
+            )
+            extra.commit()
+        finally:
+            extra.close()
+        return
+
+    db.add(
+        AuditLog(
+            actor_user_id=actor_user_id,
+            action=action,
+            target_type="backup_restore",
+            after_json=payload,
+        )
+    )
+    db.commit()
 
 
 def _download_url(kind: BackupKind, filename: str) -> str:
@@ -86,6 +123,13 @@ def _safe_cleanup_artifacts(settings, artifacts: list[tuple[BackupKind, str]]) -
             delete_backup_file(settings, kind, filename)
         except Exception:  # noqa: BLE001
             continue
+
+
+def _cleanup_uploaded_artifact(settings, *, kind: BackupKind, filename: str) -> None:  # type: ignore[no-untyped-def]
+    try:
+        delete_backup_file(settings, kind, filename)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @router.get(
@@ -240,8 +284,15 @@ def restore_backup_db(
 ) -> BackupRestoreDbResponse:
     if not req.confirm:
         raise HTTPException(status_code=400, detail="confirm=true required")
+    settings = get_settings()
+    promoted = False
+    promoted_from: str | None = None
     try:
-        restored_target = restore_db_backup(get_settings(), filename=req.filename, target_db=req.target_db)
+        restored_target = restore_db_backup(settings, filename=req.filename, target_db=req.target_db)
+        if req.promote_to_active:
+            promoted_from = restored_target
+            restored_target = promote_restored_db(settings, source_db=restored_target)
+            promoted = True
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -249,16 +300,20 @@ def restore_backup_db(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    result = BackupRestoreDbResponse(status="ok", filename=req.filename, target_db=restored_target)
-    db.add(
-        AuditLog(
-            actor_user_id=current_user.id,
-            action="BACKUP_RESTORE_DB",
-            target_type="backup_restore",
-            after_json=result.model_dump(mode="json"),
-        )
+    result = BackupRestoreDbResponse(
+        status="ok",
+        filename=req.filename,
+        target_db=restored_target,
+        promoted=promoted,
+        promoted_from=promoted_from,
     )
-    db.commit()
+    _write_backup_restore_audit(
+        actor_user_id=current_user.id,
+        action="BACKUP_RESTORE_DB",
+        payload=result.model_dump(mode="json"),
+        db=db,
+        force_new_session=promoted,
+    )
     return result
 
 
@@ -267,12 +322,17 @@ async def upload_and_restore_backup_db(
     file: UploadFile = UploadFormFile(...),
     target_db: str = Form("archive_restore"),
     confirm: bool = Form(False),
+    promote_to_active: bool = Form(False),
     current_user: CurrentUser = Depends(require_roles(UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ) -> BackupRestoreDbResponse:
     if not confirm:
         raise HTTPException(status_code=400, detail="confirm=true required")
     settings = get_settings()
+    stored = None
+    restored = False
+    promoted = False
+    promoted_from: str | None = None
     try:
         stored = store_uploaded_backup(
             settings,
@@ -281,27 +341,40 @@ async def upload_and_restore_backup_db(
             upload_stream=file.file,
         )
         restored_target = restore_db_backup(settings, filename=stored.filename, target_db=target_db)
+        restored = True
+        if promote_to_active:
+            promoted_from = restored_target
+            restored_target = promote_restored_db(settings, source_db=restored_target)
+            promoted = True
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
+        if stored and not restored:
+            _cleanup_uploaded_artifact(settings, kind="db", filename=stored.filename)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
+        if stored and not restored:
+            _cleanup_uploaded_artifact(settings, kind="db", filename=stored.filename)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
         await file.close()
 
-    result = BackupRestoreDbResponse(status="ok", filename=stored.filename, target_db=restored_target)
-    db.add(
-        AuditLog(
-            actor_user_id=current_user.id,
-            action="BACKUP_UPLOAD_RESTORE_DB",
-            target_type="backup_restore",
-            after_json=result.model_dump(mode="json"),
-        )
+    result = BackupRestoreDbResponse(
+        status="ok",
+        filename=stored.filename,
+        target_db=restored_target,
+        promoted=promoted,
+        promoted_from=promoted_from,
     )
-    db.commit()
+    _write_backup_restore_audit(
+        actor_user_id=current_user.id,
+        action="BACKUP_UPLOAD_RESTORE_DB",
+        payload=result.model_dump(mode="json"),
+        db=db,
+        force_new_session=promoted,
+    )
     return result
 
 
@@ -357,6 +430,8 @@ async def upload_and_restore_backup_objects(
     if not confirm:
         raise HTTPException(status_code=400, detail="confirm=true required")
     settings = get_settings()
+    stored = None
+    restored = False
     try:
         stored = store_uploaded_backup(
             settings,
@@ -369,13 +444,18 @@ async def upload_and_restore_backup_objects(
             filename=stored.filename,
             replace_existing=replace_existing,
         )
+        restored = True
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
+        if stored and not restored:
+            _cleanup_uploaded_artifact(settings, kind="objects", filename=stored.filename)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
+        if stored and not restored:
+            _cleanup_uploaded_artifact(settings, kind="objects", filename=stored.filename)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
         await file.close()
@@ -448,6 +528,8 @@ async def upload_and_restore_backup_config(
         raise HTTPException(status_code=400, detail="confirm=true required for apply mode")
 
     settings = get_settings()
+    stored = None
+    restored = False
     try:
         stored = store_uploaded_backup(
             settings,
@@ -456,13 +538,18 @@ async def upload_and_restore_backup_config(
             upload_stream=file.file,
         )
         preview = restore_config_backup(settings, filename=stored.filename, mode=mode)
+        restored = True
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
+        if stored and not restored:
+            _cleanup_uploaded_artifact(settings, kind="config", filename=stored.filename)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
+        if stored and not restored:
+            _cleanup_uploaded_artifact(settings, kind="config", filename=stored.filename)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
         await file.close()

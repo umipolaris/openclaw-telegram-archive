@@ -575,6 +575,32 @@ def _restore_db_compat_filtered_sql(
         raise RuntimeError(f"compat restore failed: pg_restore={dump_msg or dump_rc}, psql={psql_msg or psql_rc}")
 
 
+def _cleanup_failed_target_db(db_params: dict[str, str], *, target_db: str, env: dict[str, str]) -> None:
+    target_ident = _quote_ident(target_db)
+    cleanup_cmd = [
+        "psql",
+        "-h",
+        db_params["host"],
+        "-p",
+        db_params["port"],
+        "-U",
+        db_params["user"],
+        "-d",
+        "postgres",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='{target_db}' AND pid <> pg_backend_pid();",
+        "-c",
+        f"DROP DATABASE IF EXISTS {target_ident};",
+    ]
+    try:
+        subprocess.run(cleanup_cmd, check=True, stderr=subprocess.PIPE, env=env)
+    except Exception:  # noqa: BLE001
+        # Best effort cleanup; keep original restore error context.
+        return
+
+
 def restore_db_backup(settings: Settings, *, filename: str, target_db: str) -> str:
     if not _DB_NAME_PATTERN.fullmatch(target_db):
         raise ValueError("target_db must contain only letters, numbers, '_' or '-'")
@@ -635,23 +661,78 @@ def restore_db_backup(settings: Settings, *, filename: str, target_db: str) -> s
         "--no-privileges",
         str(source_path),
     ]
+    restore_error: RuntimeError | None = None
     try:
         subprocess.run(restore_cmd, check=True, stderr=subprocess.PIPE, env=env)
     except FileNotFoundError as exc:
-        raise RuntimeError("pg_restore not found; install postgresql-client in api image") from exc
+        restore_error = RuntimeError("pg_restore not found; install postgresql-client in api image")
+        restore_error.__cause__ = exc
     except subprocess.CalledProcessError as exc:
         err_text = (exc.stderr or b"").decode("utf-8", errors="ignore")
         if _PG_RESTORE_COMPAT_MSG in err_text:
-            _restore_db_compat_filtered_sql(
-                source_path=source_path,
-                db_params=db_params,
-                target_db=target_db,
-                env=env,
-            )
+            try:
+                _restore_db_compat_filtered_sql(
+                    source_path=source_path,
+                    db_params=db_params,
+                    target_db=target_db,
+                    env=env,
+                )
+            except RuntimeError as compat_exc:
+                restore_error = compat_exc
         else:
-            raise RuntimeError(f"pg_restore failed: {err_text.strip()}") from exc
+            restore_error = RuntimeError(f"pg_restore failed: {err_text.strip()}")
+            restore_error.__cause__ = exc
+
+    if restore_error is not None:
+        _cleanup_failed_target_db(db_params, target_db=target_db, env=env)
+        raise restore_error
 
     return target_db
+
+
+def promote_restored_db(settings: Settings, *, source_db: str) -> str:
+    if not _DB_NAME_PATTERN.fullmatch(source_db):
+        raise ValueError("source_db must contain only letters, numbers, '_' or '-'")
+
+    db_params = _db_connection_params(settings)
+    active_db = db_params["database"]
+    if source_db == active_db:
+        raise ValueError("source_db and active database are identical")
+
+    env = dict(os.environ)
+    env["PGPASSWORD"] = db_params["password"]
+
+    active_ident = _quote_ident(active_db)
+    source_ident = _quote_ident(source_db)
+
+    cmd = [
+        "psql",
+        "-h",
+        db_params["host"],
+        "-p",
+        db_params["port"],
+        "-U",
+        db_params["user"],
+        "-d",
+        "postgres",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname IN ('{active_db}','{source_db}') AND pid <> pg_backend_pid();",
+        "-c",
+        f"DROP DATABASE IF EXISTS {active_ident};",
+        "-c",
+        f"ALTER DATABASE {source_ident} RENAME TO {active_ident};",
+    ]
+    try:
+        subprocess.run(cmd, check=True, stderr=subprocess.PIPE, env=env)
+    except FileNotFoundError as exc:
+        raise RuntimeError("psql not found; install postgresql-client in api image") from exc
+    except subprocess.CalledProcessError as exc:
+        err_text = (exc.stderr or b"").decode("utf-8", errors="ignore")
+        raise RuntimeError(f"failed to promote restored db: {err_text.strip()}") from exc
+
+    return active_db
 
 
 def restore_objects_backup(settings: Settings, *, filename: str, replace_existing: bool) -> int:
@@ -692,7 +773,7 @@ def restore_objects_backup(settings: Settings, *, filename: str, replace_existin
                         )
                         restored_keys.add(object_name)
             except (tarfile.TarError, OSError) as exc:
-                raise RuntimeError("invalid objects backup archive") from exc
+                raise RuntimeError(f"invalid objects backup archive: {exc}") from exc
 
             for object_name in sorted(restored_keys):
                 client.copy_object(
@@ -737,7 +818,7 @@ def restore_objects_backup(settings: Settings, *, filename: str, replace_existin
                         shutil.copyfileobj(stream, out, length=1024 * 1024)
                     restored_rel_paths.add(rel)
         except (tarfile.TarError, OSError) as exc:
-            raise RuntimeError("invalid objects backup archive") from exc
+            raise RuntimeError(f"invalid objects backup archive: {exc}") from exc
 
         for rel in sorted(restored_rel_paths):
             src = stage_dir / rel
@@ -784,6 +865,6 @@ def restore_config_backup(settings: Settings, *, filename: str, mode: ConfigRest
                         tmp_path = Path(tmp.name)
                     tmp_path.replace(target)
     except (tarfile.TarError, OSError) as exc:
-        raise RuntimeError("invalid config backup archive") from exc
+        raise RuntimeError(f"invalid config backup archive: {exc}") from exc
 
     return ConfigRestorePreview(files=files[:200], total_files=len(files))

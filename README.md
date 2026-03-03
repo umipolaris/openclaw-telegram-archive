@@ -409,7 +409,9 @@ Docker Compose는 운영 데이터(파일/DB/캐시/검색인덱스)를 `infra/d
 - 복구는 DB/첨부/설정 각각 별도 실행
   - 설정은 `preview/apply` 모드 지원
   - 서버에 없는 백업 파일도 업로드 즉시 복구(`업로드 후 복구`) 지원
-  - DB 웹 복구는 안전상 별도 DB(`target_db`)로만 복원됨(운영 DB 직접 덮어쓰기 방지)
+  - DB 복구 시 `복구 후 운영 DB 자동 전환` 옵션을 켜면, `target_db` 복구 후 `archive`로 자동 승격 가능
+  - 옵션을 끄면 안전상 별도 DB(`target_db`)로만 복원됨(운영 DB 직접 덮어쓰기 방지)
+  - 업로드 복구 실패(확장자/포맷 오류) 시 해당 업로드 아티팩트는 백업 목록에서 자동 정리됨
 
 CLI 기준:
 ```bash
@@ -458,6 +460,7 @@ curl -X POST -b /tmp/archive.cookie \
   -F "file=@./archive_backup.dump" \
   -F "target_db=archive_restore" \
   -F "confirm=true" \
+  -F "promote_to_active=true" \
   "http://localhost:8000/api/admin/backups/upload-and-restore/db"
 
 # 7) 첨부 백업 업로드 + 즉시 복구
