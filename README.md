@@ -1,4 +1,4 @@
-# OpenClaw + Telegram Document Archive
+# ClipToDocArchive
 
 체크리스트 문서: `docs/IMPLEMENTATION_CHECKLIST.md`
 이관 런북: `docs/MIGRATION_RUNBOOK.md`
@@ -164,8 +164,8 @@ curl -X POST http://localhost:8000/api/admin/users \
 
 1) Git으로 받기(권장)
 ```bash
-git clone https://github.com/umipolaris/openclaw-telegram-archive.git
-cd openclaw-telegram-archive
+git clone https://github.com/umipolaris/ClipToDocArchive.git
+cd ClipToDocArchive
 ```
 
 2) ZIP으로 받기
