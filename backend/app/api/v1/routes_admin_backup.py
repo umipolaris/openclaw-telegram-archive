@@ -1,6 +1,11 @@
-from fastapi import APIRouter, Depends, File as UploadFormFile, Form, HTTPException, Query, UploadFile
+from dataclasses import dataclass
+from datetime import datetime
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, File as UploadFormFile, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.auth import CurrentUser, require_roles
@@ -13,6 +18,7 @@ from app.db.models import (
     DocumentTag,
     DocumentVersion,
     File as StoredFile,
+    User,
     UserRole,
 )
 from app.db.session import get_db
@@ -48,6 +54,84 @@ from app.services.backup_service import (
 router = APIRouter()
 
 
+@dataclass
+class _PromoteUserSnapshot:
+    id: UUID
+    username: str
+    password_hash: str
+    role: UserRole
+    is_active: bool
+    password_changed_at: datetime | None
+
+
+@dataclass
+class _SessionUser:
+    id: UUID
+    username: str
+    role: UserRole
+
+
+def _snapshot_user_for_promote(db: Session, user_id: UUID) -> _PromoteUserSnapshot | None:
+    row = db.get(User, user_id)
+    if not row:
+        return None
+    return _PromoteUserSnapshot(
+        id=row.id,
+        username=row.username,
+        password_hash=row.password_hash,
+        role=row.role,
+        is_active=bool(row.is_active),
+        password_changed_at=row.password_changed_at,
+    )
+
+
+def _ensure_session_user_after_promote(snapshot: _PromoteUserSnapshot | None) -> _SessionUser | None:
+    if snapshot is None:
+        return None
+
+    extra = SessionLocal()
+    try:
+        existing = extra.get(User, snapshot.id)
+        if existing:
+            return _SessionUser(id=existing.id, username=existing.username, role=existing.role)
+
+        by_username = extra.execute(select(User).where(User.username == snapshot.username)).scalar_one_or_none()
+        if by_username:
+            return _SessionUser(id=by_username.id, username=by_username.username, role=by_username.role)
+
+        seeded = User(
+            id=snapshot.id,
+            username=snapshot.username,
+            password_hash=snapshot.password_hash,
+            role=snapshot.role,
+            is_active=snapshot.is_active,
+            failed_login_attempts=0,
+            locked_until=None,
+            password_changed_at=snapshot.password_changed_at,
+            created_by=None,
+        )
+        extra.add(seeded)
+        extra.commit()
+        return _SessionUser(id=seeded.id, username=seeded.username, role=seeded.role)
+    except IntegrityError:
+        extra.rollback()
+        by_username = extra.execute(select(User).where(User.username == snapshot.username)).scalar_one_or_none()
+        if by_username:
+            return _SessionUser(id=by_username.id, username=by_username.username, role=by_username.role)
+        return None
+    finally:
+        extra.close()
+
+
+def _apply_session_user(request: Request, session_user: _SessionUser | None) -> None:
+    if session_user is None:
+        request.session.clear()
+        return
+    request.session["user_id"] = str(session_user.id)
+    request.session["username"] = session_user.username
+    request.session["role"] = session_user.role.value
+
+
 def _write_backup_restore_audit(
     *,
     actor_user_id,
@@ -59,28 +143,52 @@ def _write_backup_restore_audit(
     if force_new_session:
         extra = SessionLocal()
         try:
-            extra.add(
-                AuditLog(
-                    actor_user_id=actor_user_id,
-                    action=action,
-                    target_type="backup_restore",
-                    after_json=payload,
+            try:
+                extra.add(
+                    AuditLog(
+                        actor_user_id=actor_user_id,
+                        action=action,
+                        target_type="backup_restore",
+                        after_json=payload,
+                    )
                 )
-            )
-            extra.commit()
+                extra.commit()
+            except IntegrityError:
+                extra.rollback()
+                extra.add(
+                    AuditLog(
+                        actor_user_id=None,
+                        action=action,
+                        target_type="backup_restore",
+                        after_json=payload,
+                    )
+                )
+                extra.commit()
         finally:
             extra.close()
         return
 
-    db.add(
-        AuditLog(
-            actor_user_id=actor_user_id,
-            action=action,
-            target_type="backup_restore",
-            after_json=payload,
+    try:
+        db.add(
+            AuditLog(
+                actor_user_id=actor_user_id,
+                action=action,
+                target_type="backup_restore",
+                after_json=payload,
+            )
         )
-    )
-    db.commit()
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        db.add(
+            AuditLog(
+                actor_user_id=None,
+                action=action,
+                target_type="backup_restore",
+                after_json=payload,
+            )
+        )
+        db.commit()
 
 
 def _download_url(kind: BackupKind, filename: str) -> str:
@@ -279,19 +387,26 @@ def run_backup_all(
 @router.post("/admin/backups/restore/db", response_model=BackupRestoreDbResponse)
 def restore_backup_db(
     req: BackupRestoreDbRequest,
+    request: Request,
     current_user: CurrentUser = Depends(require_roles(UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ) -> BackupRestoreDbResponse:
     if not req.confirm:
         raise HTTPException(status_code=400, detail="confirm=true required")
     settings = get_settings()
+    promote_snapshot = _snapshot_user_for_promote(db, current_user.id) if req.promote_to_active else None
+    effective_actor_user_id = current_user.id
     promoted = False
     promoted_from: str | None = None
     try:
         restored_target = restore_db_backup(settings, filename=req.filename, target_db=req.target_db)
         if req.promote_to_active:
+            db.close()
             promoted_from = restored_target
             restored_target = promote_restored_db(settings, source_db=restored_target)
+            session_user = _ensure_session_user_after_promote(promote_snapshot)
+            _apply_session_user(request, session_user)
+            effective_actor_user_id = session_user.id if session_user else None
             promoted = True
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -308,7 +423,7 @@ def restore_backup_db(
         promoted_from=promoted_from,
     )
     _write_backup_restore_audit(
-        actor_user_id=current_user.id,
+        actor_user_id=effective_actor_user_id,
         action="BACKUP_RESTORE_DB",
         payload=result.model_dump(mode="json"),
         db=db,
@@ -319,6 +434,7 @@ def restore_backup_db(
 
 @router.post("/admin/backups/upload-and-restore/db", response_model=BackupRestoreDbResponse)
 async def upload_and_restore_backup_db(
+    request: Request,
     file: UploadFile = UploadFormFile(...),
     target_db: str = Form("archive_restore"),
     confirm: bool = Form(False),
@@ -329,6 +445,8 @@ async def upload_and_restore_backup_db(
     if not confirm:
         raise HTTPException(status_code=400, detail="confirm=true required")
     settings = get_settings()
+    promote_snapshot = _snapshot_user_for_promote(db, current_user.id) if promote_to_active else None
+    effective_actor_user_id = current_user.id
     stored = None
     restored = False
     promoted = False
@@ -343,8 +461,12 @@ async def upload_and_restore_backup_db(
         restored_target = restore_db_backup(settings, filename=stored.filename, target_db=target_db)
         restored = True
         if promote_to_active:
+            db.close()
             promoted_from = restored_target
             restored_target = promote_restored_db(settings, source_db=restored_target)
+            session_user = _ensure_session_user_after_promote(promote_snapshot)
+            _apply_session_user(request, session_user)
+            effective_actor_user_id = session_user.id if session_user else None
             promoted = True
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -369,7 +491,7 @@ async def upload_and_restore_backup_db(
         promoted_from=promoted_from,
     )
     _write_backup_restore_audit(
-        actor_user_id=current_user.id,
+        actor_user_id=effective_actor_user_id,
         action="BACKUP_UPLOAD_RESTORE_DB",
         payload=result.model_dump(mode="json"),
         db=db,
