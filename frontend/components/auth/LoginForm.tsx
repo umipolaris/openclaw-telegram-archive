@@ -54,12 +54,18 @@ export function LoginForm() {
       });
 
       if (!res.ok) {
-        let detail = "";
+        const raw = await res.text();
+        let detail = raw;
         try {
-          const body = (await res.json()) as { detail?: unknown };
-          detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? "");
+          const body = JSON.parse(raw) as { detail?: unknown };
+          const bodyDetail = body?.detail;
+          if (typeof bodyDetail === "string") {
+            detail = bodyDetail;
+          } else if (bodyDetail != null) {
+            detail = JSON.stringify(bodyDetail);
+          }
         } catch {
-          detail = await res.text();
+          // fallback to raw body text
         }
         if (res.status === 423) {
           throw new Error("계정이 일시 잠금되었습니다. 잠시 후 다시 시도하세요.");

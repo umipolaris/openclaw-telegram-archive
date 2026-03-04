@@ -529,15 +529,13 @@ def restore_backup_objects(
         restored_count=restored_count,
         replace_existing=req.replace_existing,
     )
-    db.add(
-        AuditLog(
-            actor_user_id=current_user.id,
-            action="BACKUP_RESTORE_OBJECTS",
-            target_type="backup_restore",
-            after_json=result.model_dump(mode="json"),
-        )
+    _write_backup_restore_audit(
+        actor_user_id=current_user.id,
+        action="BACKUP_RESTORE_OBJECTS",
+        payload=result.model_dump(mode="json"),
+        db=db,
+        force_new_session=False,
     )
-    db.commit()
     return result
 
 
@@ -588,15 +586,13 @@ async def upload_and_restore_backup_objects(
         restored_count=restored_count,
         replace_existing=replace_existing,
     )
-    db.add(
-        AuditLog(
-            actor_user_id=current_user.id,
-            action="BACKUP_UPLOAD_RESTORE_OBJECTS",
-            target_type="backup_restore",
-            after_json=result.model_dump(mode="json"),
-        )
+    _write_backup_restore_audit(
+        actor_user_id=current_user.id,
+        action="BACKUP_UPLOAD_RESTORE_OBJECTS",
+        payload=result.model_dump(mode="json"),
+        db=db,
+        force_new_session=False,
     )
-    db.commit()
     return result
 
 
@@ -626,15 +622,13 @@ def restore_backup_config(
         total_files=preview.total_files,
         files=preview.files,
     )
-    db.add(
-        AuditLog(
-            actor_user_id=current_user.id,
-            action="BACKUP_RESTORE_CONFIG",
-            target_type="backup_restore",
-            after_json=result.model_dump(mode="json"),
-        )
+    _write_backup_restore_audit(
+        actor_user_id=current_user.id,
+        action="BACKUP_RESTORE_CONFIG",
+        payload=result.model_dump(mode="json"),
+        db=db,
+        force_new_session=False,
     )
-    db.commit()
     return result
 
 
@@ -683,13 +677,11 @@ async def upload_and_restore_backup_config(
         total_files=preview.total_files,
         files=preview.files,
     )
-    db.add(
-        AuditLog(
-            actor_user_id=current_user.id,
-            action="BACKUP_UPLOAD_RESTORE_CONFIG",
-            target_type="backup_restore",
-            after_json=result.model_dump(mode="json"),
-        )
+    _write_backup_restore_audit(
+        actor_user_id=current_user.id,
+        action="BACKUP_UPLOAD_RESTORE_CONFIG",
+        payload=result.model_dump(mode="json"),
+        db=db,
+        force_new_session=False,
     )
-    db.commit()
     return result

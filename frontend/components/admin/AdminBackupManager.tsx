@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArchiveRestore, Download, HardDrive, RefreshCcw, ShieldAlert, Trash2 } from "lucide-react";
-import { apiDelete, apiGet, apiPost, apiPostForm, buildApiUrl } from "@/lib/api-client";
+import { apiDelete, apiGet, apiPost, apiPostFormWithProgress, buildApiUrl } from "@/lib/api-client";
 
 type BackupKind = "db" | "objects" | "config";
 type ConfigRestoreMode = "preview" | "apply";
@@ -81,6 +81,13 @@ const KIND_LABEL: Record<BackupKind, string> = {
   config: "설정",
 };
 
+type OperationProgress = {
+  label: string;
+  phase: string;
+  percent: number;
+  failed: boolean;
+};
+
 export function AdminBackupManager() {
   const [filesByKind, setFilesByKind] = useState<Record<BackupKind, BackupFileItem[]>>({
     db: [],
@@ -116,6 +123,79 @@ export function AdminBackupManager() {
   const [configUploadInputKey, setConfigUploadInputKey] = useState(0);
   const [configPreviewFiles, setConfigPreviewFiles] = useState<string[]>([]);
   const [configPreviewTotal, setConfigPreviewTotal] = useState(0);
+  const [progress, setProgress] = useState<OperationProgress | null>(null);
+
+  const progressTimerRef = useRef<number | null>(null);
+  const progressHideTimerRef = useRef<number | null>(null);
+
+  const clearProgressTimers = useCallback(() => {
+    if (progressTimerRef.current != null) {
+      window.clearInterval(progressTimerRef.current);
+      progressTimerRef.current = null;
+    }
+    if (progressHideTimerRef.current != null) {
+      window.clearTimeout(progressHideTimerRef.current);
+      progressHideTimerRef.current = null;
+    }
+  }, []);
+
+  const beginProgress = useCallback(
+    (label: string, phase: string) => {
+      clearProgressTimers();
+      setProgress({
+        label,
+        phase,
+        percent: 8,
+        failed: false,
+      });
+      progressTimerRef.current = window.setInterval(() => {
+        setProgress((prev) => {
+          if (!prev) return prev;
+          if (prev.percent >= 92) return prev;
+          return { ...prev, percent: prev.percent + 2 };
+        });
+      }, 500);
+    },
+    [clearProgressTimers],
+  );
+
+  const setProgressPhase = useCallback((phase: string) => {
+    setProgress((prev) => (prev ? { ...prev, phase } : prev));
+  }, []);
+
+  const setProgressPercent = useCallback((percent: number, phase?: string) => {
+    const clamped = Math.max(0, Math.min(99, Math.round(percent)));
+    setProgress((prev) => {
+      if (!prev) return prev;
+      if (phase) {
+        return { ...prev, phase, percent: clamped };
+      }
+      return { ...prev, percent: clamped };
+    });
+  }, []);
+
+  const finishProgress = useCallback(
+    (ok: boolean, phase: string) => {
+      clearProgressTimers();
+      setProgress((prev) =>
+        prev
+          ? {
+              ...prev,
+              phase,
+              percent: 100,
+              failed: !ok,
+            }
+          : null,
+      );
+      progressHideTimerRef.current = window.setTimeout(() => {
+        setProgress(null);
+        progressHideTimerRef.current = null;
+      }, ok ? 1200 : 3000);
+    },
+    [clearProgressTimers],
+  );
+
+  useEffect(() => () => clearProgressTimers(), [clearProgressTimers]);
 
   const loadKind = useCallback(async (kind: BackupKind) => {
     setLoadingByKind((prev) => ({ ...prev, [kind]: true }));
@@ -151,12 +231,15 @@ export function AdminBackupManager() {
     setRunning(kind);
     setError("");
     setMessage("");
+    beginProgress(`${KIND_LABEL[kind]} 백업`, "백업 생성 중...");
     try {
       const res = await apiPost<BackupRunResponse>(`/admin/backups/run/${kind}`, {});
       setMessage(`${KIND_LABEL[kind]} 백업 완료: ${res.filename}`);
       await loadKind(kind);
+      finishProgress(true, "완료");
     } catch (err) {
       setError(err instanceof Error ? err.message : `${KIND_LABEL[kind]} 백업 실패`);
+      finishProgress(false, "실패");
     } finally {
       setRunning("");
     }
@@ -166,12 +249,15 @@ export function AdminBackupManager() {
     setRunning("all");
     setError("");
     setMessage("");
+    beginProgress("전체 백업", "백업 생성 중...");
     try {
       const res = await apiPost<BackupRunAllResponse>("/admin/backups/run-all", {});
       setMessage(`전체 백업 완료: ${res.items.map((x) => `${KIND_LABEL[x.kind]}(${x.filename})`).join(", ")}`);
       await refreshAll();
+      finishProgress(true, "완료");
     } catch (err) {
       setError(err instanceof Error ? err.message : "전체 백업 실패");
+      finishProgress(false, "실패");
     } finally {
       setRunning("");
     }
@@ -208,6 +294,7 @@ export function AdminBackupManager() {
     setRunning("restore-db");
     setError("");
     setMessage("");
+    beginProgress("DB 복구", "복구 적용 중...");
     try {
       const res = await apiPost<BackupRestoreDbResponse>("/admin/backups/restore/db", {
         filename: dbFilename,
@@ -220,8 +307,10 @@ export function AdminBackupManager() {
       } else {
         setMessage(`DB 복구 완료: ${res.filename} -> ${res.target_db}`);
       }
+      finishProgress(true, "완료");
     } catch (err) {
       setError(err instanceof Error ? err.message : "DB 복구 실패");
+      finishProgress(false, "실패");
     } finally {
       setRunning("");
     }
@@ -235,13 +324,30 @@ export function AdminBackupManager() {
     setRunning("upload-restore-db");
     setError("");
     setMessage("");
+    beginProgress("DB 업로드 복구", "파일 업로드 중...");
+    let switchedToServerPhase = false;
     try {
       const form = new FormData();
       form.append("file", dbUploadFile);
       form.append("target_db", dbTarget.trim());
       form.append("confirm", String(dbConfirm));
       form.append("promote_to_active", String(dbPromoteToActive));
-      const res = await apiPostForm<BackupRestoreDbResponse>("/admin/backups/upload-and-restore/db", form);
+      const res = await apiPostFormWithProgress<BackupRestoreDbResponse>(
+        "/admin/backups/upload-and-restore/db",
+        form,
+        (p) => {
+          const scaled = Math.max(8, Math.min(70, Math.round((p.percent / 100) * 70)));
+          setProgressPercent(scaled, `파일 업로드 중... ${p.percent}%`);
+          if (p.percent >= 100 && !switchedToServerPhase) {
+            switchedToServerPhase = true;
+            setProgressPhase("서버 복구 적용 중...");
+          }
+        },
+      );
+      if (!switchedToServerPhase) {
+        setProgressPhase("서버 복구 적용 중...");
+      }
+      setProgressPercent(90);
       if (res.promoted) {
         setMessage(`DB 업로드 복구+운영전환 완료: ${res.filename} -> ${res.promoted_from} -> ${res.target_db}`);
       } else {
@@ -251,8 +357,10 @@ export function AdminBackupManager() {
       setDbUploadFile(null);
       setDbUploadInputKey((prev) => prev + 1);
       await loadKind("db");
+      finishProgress(true, "완료");
     } catch (err) {
       setError(err instanceof Error ? err.message : "DB 업로드 복구 실패");
+      finishProgress(false, "실패");
     } finally {
       setRunning("");
     }
@@ -262,6 +370,7 @@ export function AdminBackupManager() {
     setRunning("restore-objects");
     setError("");
     setMessage("");
+    beginProgress("첨부파일 복구", "복구 적용 중...");
     try {
       const res = await apiPost<BackupRestoreObjectsResponse>("/admin/backups/restore/objects", {
         filename: objectsFilename,
@@ -269,8 +378,10 @@ export function AdminBackupManager() {
         confirm: objectsConfirm,
       });
       setMessage(`첨부 복구 완료: ${res.restored_count}개 복원됨`);
+      finishProgress(true, "완료");
     } catch (err) {
       setError(err instanceof Error ? err.message : "첨부 복구 실패");
+      finishProgress(false, "실패");
     } finally {
       setRunning("");
     }
@@ -284,19 +395,38 @@ export function AdminBackupManager() {
     setRunning("upload-restore-objects");
     setError("");
     setMessage("");
+    beginProgress("첨부파일 업로드 복구", "파일 업로드 중...");
+    let switchedToServerPhase = false;
     try {
       const form = new FormData();
       form.append("file", objectsUploadFile);
       form.append("replace_existing", String(objectsReplaceExisting));
       form.append("confirm", String(objectsConfirm));
-      const res = await apiPostForm<BackupRestoreObjectsResponse>("/admin/backups/upload-and-restore/objects", form);
+      const res = await apiPostFormWithProgress<BackupRestoreObjectsResponse>(
+        "/admin/backups/upload-and-restore/objects",
+        form,
+        (p) => {
+          const scaled = Math.max(8, Math.min(70, Math.round((p.percent / 100) * 70)));
+          setProgressPercent(scaled, `파일 업로드 중... ${p.percent}%`);
+          if (p.percent >= 100 && !switchedToServerPhase) {
+            switchedToServerPhase = true;
+            setProgressPhase("서버 복구 적용 중...");
+          }
+        },
+      );
+      if (!switchedToServerPhase) {
+        setProgressPhase("서버 복구 적용 중...");
+      }
+      setProgressPercent(90);
       setMessage(`첨부 업로드 복구 완료: ${res.restored_count}개 복원됨`);
       setObjectsFilename(res.filename);
       setObjectsUploadFile(null);
       setObjectsUploadInputKey((prev) => prev + 1);
       await loadKind("objects");
+      finishProgress(true, "완료");
     } catch (err) {
       setError(err instanceof Error ? err.message : "첨부 업로드 복구 실패");
+      finishProgress(false, "실패");
     } finally {
       setRunning("");
     }
@@ -308,6 +438,7 @@ export function AdminBackupManager() {
     setMessage("");
     setConfigPreviewFiles([]);
     setConfigPreviewTotal(0);
+    beginProgress("설정 복구", configMode === "preview" ? "설정 미리보기 생성 중..." : "설정 적용 중...");
     try {
       const res = await apiPost<BackupRestoreConfigResponse>("/admin/backups/restore/config", {
         filename: configFilename,
@@ -321,8 +452,10 @@ export function AdminBackupManager() {
       );
       setConfigPreviewFiles(res.files ?? []);
       setConfigPreviewTotal(res.total_files ?? 0);
+      finishProgress(true, "완료");
     } catch (err) {
       setError(err instanceof Error ? err.message : "설정 복구 실패");
+      finishProgress(false, "실패");
     } finally {
       setRunning("");
     }
@@ -338,12 +471,29 @@ export function AdminBackupManager() {
     setMessage("");
     setConfigPreviewFiles([]);
     setConfigPreviewTotal(0);
+    beginProgress("설정 업로드 복구", "파일 업로드 중...");
+    let switchedToServerPhase = false;
     try {
       const form = new FormData();
       form.append("file", configUploadFile);
       form.append("mode", configMode);
       form.append("confirm", String(configConfirm));
-      const res = await apiPostForm<BackupRestoreConfigResponse>("/admin/backups/upload-and-restore/config", form);
+      const res = await apiPostFormWithProgress<BackupRestoreConfigResponse>(
+        "/admin/backups/upload-and-restore/config",
+        form,
+        (p) => {
+          const scaled = Math.max(8, Math.min(70, Math.round((p.percent / 100) * 70)));
+          setProgressPercent(scaled, `파일 업로드 중... ${p.percent}%`);
+          if (p.percent >= 100 && !switchedToServerPhase) {
+            switchedToServerPhase = true;
+            setProgressPhase("서버 복구 적용 중...");
+          }
+        },
+      );
+      if (!switchedToServerPhase) {
+        setProgressPhase("서버 복구 적용 중...");
+      }
+      setProgressPercent(90);
       setMessage(
         configMode === "preview"
           ? `설정 업로드 미리보기 완료: ${res.total_files}개`
@@ -355,8 +505,10 @@ export function AdminBackupManager() {
       setConfigUploadFile(null);
       setConfigUploadInputKey((prev) => prev + 1);
       await loadKind("config");
+      finishProgress(true, "완료");
     } catch (err) {
       setError(err instanceof Error ? err.message : "설정 업로드 복구 실패");
+      finishProgress(false, "실패");
     } finally {
       setRunning("");
     }
@@ -425,6 +577,22 @@ export function AdminBackupManager() {
         </div>
         <p className="text-xs text-stone-500">대용량 백업은 시간이 오래 걸릴 수 있습니다.</p>
       </article>
+
+      {progress ? (
+        <article className="rounded-lg border border-stone-200 bg-white p-3 shadow-panel">
+          <div className="mb-1 flex items-center justify-between gap-3">
+            <p className="truncate text-xs font-semibold text-stone-700">{progress.label}</p>
+            <p className={`text-xs ${progress.failed ? "text-red-700" : "text-stone-600"}`}>{progress.percent}%</p>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-stone-200">
+            <div
+              className={`h-full rounded-full transition-[width] duration-200 ${progress.failed ? "bg-red-500" : "bg-emerald-500"}`}
+              style={{ width: `${progress.percent}%` }}
+            />
+          </div>
+          <p className={`mt-1 text-[11px] ${progress.failed ? "text-red-700" : "text-stone-600"}`}>{progress.phase}</p>
+        </article>
+      ) : null}
 
       {message ? <p className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{message}</p> : null}
       {error ? <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}

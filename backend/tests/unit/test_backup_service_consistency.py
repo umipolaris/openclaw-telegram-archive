@@ -190,6 +190,38 @@ def test_restore_objects_backup_rejects_invalid_archive_payload(tmp_path: Path):
         backup_service.restore_objects_backup(settings, filename=archive_path.name, replace_existing=True)
 
 
+def test_restore_objects_backup_wraps_minio_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    settings = _make_settings(tmp_path)
+    settings.storage_backend = "minio"
+    archive_path = Path(settings.backup_root) / "objects" / "objects_minio_20260303_120002.tar.gz"
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive_path, "w:gz"):
+        pass
+    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    Path(f"{archive_path}.meta").write_text(
+        "\n".join(
+            [
+                "kind=objects",
+                "format=archive-backup-v1",
+                "objects_layout=object-keys-v1",
+                "storage_backend=minio",
+                "bucket=archive",
+                f"sha256={digest}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def _raise_minio(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise ValueError("minio auth failed")
+
+    monkeypatch.setattr(backup_service, "get_minio_client", _raise_minio)
+
+    with pytest.raises(RuntimeError, match="objects restore failed"):
+        backup_service.restore_objects_backup(settings, filename=archive_path.name, replace_existing=True)
+
+
 def test_restore_config_backup_rejects_invalid_archive_payload(tmp_path: Path):
     settings = _make_settings(tmp_path)
     archive_path = Path(settings.backup_root) / "config" / "config_20260303_120001.tar.gz"

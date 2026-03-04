@@ -743,57 +743,62 @@ def restore_objects_backup(settings: Settings, *, filename: str, replace_existin
     _verify_backup_checksum(source_path, meta, kind="objects")
 
     if settings.storage_backend == "minio":
-        client = get_minio_client(
-            endpoint=settings.minio_endpoint,
-            access_key=settings.minio_access_key,
-            secret_key=settings.minio_secret_key,
-            secure=settings.minio_secure,
-        )
-        ensure_bucket(client, settings.storage_bucket)
-        stage_prefix = f"__restore_staging__/{_timestamp()}_{os.getpid()}/"
-        restored_keys: set[str] = set()
-        restored = 0
         try:
+            client = get_minio_client(
+                endpoint=settings.minio_endpoint,
+                access_key=settings.minio_access_key,
+                secret_key=settings.minio_secret_key,
+                secure=settings.minio_secure,
+            )
+            ensure_bucket(client, settings.storage_bucket)
+            stage_prefix = f"__restore_staging__/{_timestamp()}_{os.getpid()}/"
+            restored_keys: set[str] = set()
+            restored = 0
             try:
-                with tarfile.open(source_path, "r:gz") as tar:
-                    for member in tar.getmembers():
-                        if not member.isfile():
-                            continue
-                        object_name = _normalize_archive_member_path(member.name)
-                        stream = tar.extractfile(member)
-                        if stream is None:
-                            continue
-                        stage_object_name = f"{stage_prefix}{object_name}"
-                        client.put_object(
-                            bucket_name=settings.storage_bucket,
-                            object_name=stage_object_name,
-                            data=stream,
-                            length=member.size,
-                            part_size=10 * 1024 * 1024,
-                        )
-                        restored_keys.add(object_name)
-            except (tarfile.TarError, OSError) as exc:
-                raise RuntimeError(f"invalid objects backup archive: {exc}") from exc
+                try:
+                    with tarfile.open(source_path, "r:gz") as tar:
+                        for member in tar.getmembers():
+                            if not member.isfile():
+                                continue
+                            object_name = _normalize_archive_member_path(member.name)
+                            stream = tar.extractfile(member)
+                            if stream is None:
+                                continue
+                            stage_object_name = f"{stage_prefix}{object_name}"
+                            client.put_object(
+                                bucket_name=settings.storage_bucket,
+                                object_name=stage_object_name,
+                                data=stream,
+                                length=member.size,
+                                part_size=10 * 1024 * 1024,
+                            )
+                            restored_keys.add(object_name)
+                except (tarfile.TarError, OSError) as exc:
+                    raise RuntimeError(f"invalid objects backup archive: {exc}") from exc
 
-            for object_name in sorted(restored_keys):
-                client.copy_object(
-                    settings.storage_bucket,
-                    object_name,
-                    CopySource(settings.storage_bucket, f"{stage_prefix}{object_name}"),
-                )
-                restored += 1
+                for object_name in sorted(restored_keys):
+                    client.copy_object(
+                        settings.storage_bucket,
+                        object_name,
+                        CopySource(settings.storage_bucket, f"{stage_prefix}{object_name}"),
+                    )
+                    restored += 1
 
-            if replace_existing:
-                for obj in client.list_objects(settings.storage_bucket, recursive=True):
-                    if not obj.object_name:
-                        continue
-                    if obj.object_name.startswith(stage_prefix):
-                        continue
-                    if obj.object_name not in restored_keys:
-                        client.remove_object(settings.storage_bucket, obj.object_name)
-        finally:
-            _cleanup_minio_prefix(client, settings.storage_bucket, stage_prefix)
-        return restored
+                if replace_existing:
+                    for obj in client.list_objects(settings.storage_bucket, recursive=True):
+                        if not obj.object_name:
+                            continue
+                        if obj.object_name.startswith(stage_prefix):
+                            continue
+                        if obj.object_name not in restored_keys:
+                            client.remove_object(settings.storage_bucket, obj.object_name)
+            finally:
+                _cleanup_minio_prefix(client, settings.storage_bucket, stage_prefix)
+            return restored
+        except RuntimeError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"objects restore failed: {exc}") from exc
 
     disk_root = Path(settings.storage_disk_root)
     disk_root.mkdir(parents=True, exist_ok=True)
