@@ -280,7 +280,9 @@ docker compose exec -T api python scripts/bootstrap_admin.py --username admin --
 ```
 
 `make bootstrap-admin` 사용 시:
-- API가 꺼져 있으면 자동으로 `api` 서비스를 기동하고 헬스체크 통과 후 계정을 생성합니다.
+- Docker/Compose 사전 점검 후 `api + postgres + redis + minio + meilisearch`를 자동 기동합니다.
+- API 헬스체크(최대 300초) 통과 후 계정을 생성하며, 대기 중 진행 메시지를 출력합니다.
+- 타임아웃 시 최근 서비스 로그를 자동 출력합니다.
 
 ### 5) 접속 확인
 - 프론트: `http://localhost:3000/archive`

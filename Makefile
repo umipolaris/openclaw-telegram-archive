@@ -27,15 +27,21 @@ doctor: ensure-env
 	@./infra/scripts/doctor.sh
 
 ensure-api: ensure-env
-	@cd infra && APP_PROFILE=$(APP_PROFILE) ./scripts/compose.sh ps --status running api >/dev/null 2>&1 || { \
-	  echo "[bootstrap] api 서비스가 꺼져 있어 시작합니다..."; \
-	  APP_PROFILE=$(APP_PROFILE) ./scripts/compose.sh up -d --build api; \
-	}
+	@echo "[bootstrap] Docker/Compose 사전 점검..."
+	@./infra/scripts/doctor.sh
+	@echo "[bootstrap] 필수 서비스 기동(api + postgres + redis + minio + meilisearch)..."
+	@cd infra && APP_PROFILE=$(APP_PROFILE) ./scripts/compose.sh up -d --build postgres redis minio meilisearch api
+	@echo "[bootstrap] API 헬스체크 대기 중 (최대 300초)..."
 	@i=0; \
 	until curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; do \
 	  i=$$((i+1)); \
-	  if [ $$i -ge 60 ]; then \
-	    echo "API healthcheck timeout (120s)"; \
+	  if [ $$((i % 5)) -eq 0 ]; then \
+	    echo "[bootstrap] API 대기 중... $$((i * 2))초 경과"; \
+	  fi; \
+	  if [ $$i -ge 150 ]; then \
+	    echo "[error] API healthcheck timeout (300s)"; \
+	    echo "[hint] 최근 로그를 출력합니다."; \
+	    cd infra && APP_PROFILE=$(APP_PROFILE) ./scripts/compose.sh logs --tail=120 api postgres redis minio meilisearch; \
 	    exit 1; \
 	  fi; \
 	  sleep 2; \
