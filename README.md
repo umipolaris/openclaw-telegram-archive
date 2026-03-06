@@ -403,6 +403,53 @@ cd infra
 ./scripts/uninstall-autostart-macos.sh
 ```
 
+## Linux(Ubuntu) 재부팅 자동 시작 (systemd)
+리눅스 서버 재부팅 후 스택이 자동 기동되도록 `systemd` 서비스를 등록할 수 있습니다.
+
+1) Docker를 부팅 시 자동 시작:
+```bash
+sudo systemctl enable --now docker
+```
+
+2) 서비스 유닛 생성(`/etc/systemd/system/cliptodocarchive.service`):
+```ini
+[Unit]
+Description=ClipToDocArchive Docker Compose Stack
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/www/board/ClipToDocArchive/infra
+RemainAfterExit=yes
+ExecStart=/usr/bin/docker compose --env-file ./env/.env.common --env-file ./env/.env.dev up -d --build
+ExecStop=/usr/bin/docker compose --env-file ./env/.env.common --env-file ./env/.env.dev down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+```
+
+3) 등록/실행:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable cliptodocarchive.service
+sudo systemctl start cliptodocarchive.service
+sudo systemctl status cliptodocarchive.service
+```
+
+4) 재부팅 후 확인:
+```bash
+sudo reboot
+# 재부팅 후
+docker ps
+```
+
+주의:
+- `WorkingDirectory`는 실제 설치 경로로 변경하세요.
+- `docker` 경로가 다르면 `which docker`로 확인 후 `ExecStart/ExecStop` 경로를 맞추세요.
+- 운영 환경이 `prod`면 `--env-file ./env/.env.prod`로 교체하세요.
+
 ## 아카이브 UI 사용 요약 (현재)
 - 페이지 최상단 우측: 한 줄형 `간편게시` 입력(`파일 1개 + 설명 + 간편게시`), 등록 즉시 목록 갱신
 - 게시물 목록 카드 상단: 슬림 툴바
