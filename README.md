@@ -422,7 +422,7 @@ After=docker.service network-online.target
 Type=oneshot
 WorkingDirectory=/home/www/board/ClipToDocArchive/infra
 RemainAfterExit=yes
-ExecStart=/usr/bin/docker compose --env-file ./env/.env.common --env-file ./env/.env.dev up -d --build
+ExecStart=/usr/bin/docker compose --env-file ./env/.env.common --env-file ./env/.env.dev up -d
 ExecStop=/usr/bin/docker compose --env-file ./env/.env.common --env-file ./env/.env.dev down
 TimeoutStartSec=0
 
@@ -438,7 +438,13 @@ sudo systemctl start cliptodocarchive.service
 sudo systemctl status cliptodocarchive.service
 ```
 
-4) 재부팅 후 확인:
+4) 이미지 빌드(최초 1회 / 코드 업데이트 후):
+```bash
+cd /home/www/board/ClipToDocArchive/infra
+docker compose --env-file ./env/.env.common --env-file ./env/.env.dev build --pull
+```
+
+5) 재부팅 후 확인:
 ```bash
 sudo reboot
 # 재부팅 후
@@ -449,6 +455,7 @@ docker ps
 - `WorkingDirectory`는 실제 설치 경로로 변경하세요.
 - `docker` 경로가 다르면 `which docker`로 확인 후 `ExecStart/ExecStop` 경로를 맞추세요.
 - 운영 환경이 `prod`면 `--env-file ./env/.env.prod`로 교체하세요.
+- 자동 시작 서비스는 `--build`를 사용하지 않는 것을 권장합니다(부팅 시 레지스트리/네트워크 의존으로 실패 방지).
 
 ## 아카이브 UI 사용 요약 (현재)
 - 페이지 최상단 우측: 한 줄형 `간편게시` 입력(`파일 1개 + 설명 + 간편게시`), 등록 즉시 목록 갱신
