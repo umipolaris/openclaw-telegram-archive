@@ -997,6 +997,44 @@
               "title": "Month"
             },
             "description": "YYYY-MM"
+          },
+          {
+            "name": "start_at",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO8601 datetime (inclusive)",
+              "title": "Start At"
+            },
+            "description": "ISO8601 datetime (inclusive)"
+          },
+          {
+            "name": "end_at",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO8601 datetime (exclusive)",
+              "title": "End At"
+            },
+            "description": "ISO8601 datetime (exclusive)"
           }
         ],
         "responses": {
@@ -6994,6 +7032,13 @@
             "type": "object",
             "title": "Category Colors"
           },
+          "holidays": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Holidays"
+          },
           "allow_all_day": {
             "type": "boolean",
             "title": "Allow All Day",
@@ -7013,6 +7058,16 @@
             "type": "string",
             "title": "Default Time",
             "default": "09:00"
+          },
+          "list_range_past_days": {
+            "type": "integer",
+            "title": "List Range Past Days",
+            "default": 7
+          },
+          "list_range_future_months": {
+            "type": "integer",
+            "title": "List Range Future Months",
+            "default": 2
           },
           "generated_at": {
             "type": "string",
@@ -7043,6 +7098,13 @@
             "type": "object",
             "title": "Category Colors"
           },
+          "holidays": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Holidays"
+          },
           "allow_all_day": {
             "type": "boolean",
             "title": "Allow All Day",
@@ -7064,6 +7126,20 @@
             "minLength": 5,
             "title": "Default Time",
             "default": "09:00"
+          },
+          "list_range_past_days": {
+            "type": "integer",
+            "maximum": 365.0,
+            "minimum": 0.0,
+            "title": "List Range Past Days",
+            "default": 7
+          },
+          "list_range_future_months": {
+            "type": "integer",
+            "maximum": 24.0,
+            "minimum": 0.0,
+            "title": "List Range Future Months",
+            "default": 2
           }
         },
         "type": "object",

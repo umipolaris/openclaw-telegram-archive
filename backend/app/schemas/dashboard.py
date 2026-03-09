@@ -93,17 +93,23 @@ class DashboardTaskUpdateRequest(BaseModel):
 class DashboardTaskSettingsResponse(BaseModel):
     categories: list[str] = Field(default_factory=lambda: ["할일", "회의"])
     category_colors: dict[str, str] = Field(default_factory=dict)
+    holidays: dict[str, str] = Field(default_factory=dict)
     allow_all_day: bool = True
     use_location: bool = True
     use_comment: bool = True
     default_time: str = "09:00"
+    list_range_past_days: int = 7
+    list_range_future_months: int = 2
     generated_at: datetime
 
 
 class DashboardTaskSettingsUpdateRequest(BaseModel):
     categories: list[str] = Field(default_factory=list, max_length=30)
     category_colors: dict[str, str] = Field(default_factory=dict)
+    holidays: dict[str, str] = Field(default_factory=dict)
     allow_all_day: bool = True
     use_location: bool = True
     use_comment: bool = True
     default_time: str = Field(default="09:00", min_length=5, max_length=5)
+    list_range_past_days: int = Field(default=7, ge=0, le=365)
+    list_range_future_months: int = Field(default=2, ge=0, le=24)

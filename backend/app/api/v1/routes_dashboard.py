@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import re
 from uuid import UUID
 
@@ -43,6 +43,13 @@ DEFAULT_CATEGORY_COLORS = {
     "할일": "#059669",
     "회의": "#0284C7",
 }
+DEFAULT_TASK_LIST_RANGE_PAST_DAYS = 7
+DEFAULT_TASK_LIST_RANGE_FUTURE_MONTHS = 2
+MIN_TASK_LIST_RANGE_PAST_DAYS = 0
+MAX_TASK_LIST_RANGE_PAST_DAYS = 365
+MIN_TASK_LIST_RANGE_FUTURE_MONTHS = 0
+MAX_TASK_LIST_RANGE_FUTURE_MONTHS = 24
+MAX_TASK_HOLIDAYS = 400
 TASK_COLOR_PALETTE = [
     "#059669",
     "#0284C7",
@@ -85,6 +92,22 @@ def _month_bounds(month: str | None) -> tuple[datetime, datetime, str]:
         end = datetime(year, mon + 1, 1, tzinfo=timezone.utc)
     month_key = f"{year:04d}-{mon:02d}"
     return start, end, month_key
+
+
+def _normalize_task_list_range_past_days(raw: int | None) -> int:
+    value = DEFAULT_TASK_LIST_RANGE_PAST_DAYS if raw is None else int(raw)
+    return max(MIN_TASK_LIST_RANGE_PAST_DAYS, min(MAX_TASK_LIST_RANGE_PAST_DAYS, value))
+
+
+def _normalize_task_list_range_future_months(raw: int | None) -> int:
+    value = DEFAULT_TASK_LIST_RANGE_FUTURE_MONTHS if raw is None else int(raw)
+    return max(MIN_TASK_LIST_RANGE_FUTURE_MONTHS, min(MAX_TASK_LIST_RANGE_FUTURE_MONTHS, value))
+
+
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _normalize_categories(raw: list[str] | None) -> list[str]:
@@ -140,6 +163,24 @@ def _normalize_category_colors(raw: dict | None, categories: list[str]) -> dict[
     return normalized
 
 
+def _normalize_holidays(raw: dict | None) -> dict[str, str]:
+    source = raw if isinstance(raw, dict) else {}
+    normalized: dict[str, str] = {}
+    for raw_day, raw_name in source.items():
+        day_text = str(raw_day).strip()
+        try:
+            day_value = date.fromisoformat(day_text)
+        except ValueError:
+            continue
+        day_key = day_value.isoformat()
+        name = str(raw_name).strip()
+        if not name:
+            continue
+        normalized[day_key] = name[:80]
+    ordered_items = sorted(normalized.items(), key=lambda item: item[0])[:MAX_TASK_HOLIDAYS]
+    return {key: value for key, value in ordered_items}
+
+
 def _get_task_settings_row(db: Session) -> DashboardTaskSetting:
     row = db.get(DashboardTaskSetting, "default")
     if row is None:
@@ -147,10 +188,13 @@ def _get_task_settings_row(db: Session) -> DashboardTaskSetting:
             scope="default",
             categories_json=DEFAULT_TASK_CATEGORIES,
             category_colors_json=DEFAULT_CATEGORY_COLORS,
+            holidays_json={},
             allow_all_day=True,
             use_location=True,
             use_comment=True,
             default_time="09:00",
+            list_range_past_days=DEFAULT_TASK_LIST_RANGE_PAST_DAYS,
+            list_range_future_months=DEFAULT_TASK_LIST_RANGE_FUTURE_MONTHS,
         )
         db.add(row)
         db.commit()
@@ -342,10 +386,24 @@ def get_dashboard_summary(
 @router.get("/dashboard/tasks", response_model=DashboardTaskListResponse)
 def get_dashboard_tasks(
     month: str | None = Query(None, description="YYYY-MM"),
+    start_at: datetime | None = Query(None, description="ISO8601 datetime (inclusive)"),
+    end_at: datetime | None = Query(None, description="ISO8601 datetime (exclusive)"),
     _: CurrentUser = Depends(require_roles(UserRole.VIEWER, UserRole.REVIEWER, UserRole.EDITOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ) -> DashboardTaskListResponse:
-    start, end, month_key = _month_bounds(month)
+    if start_at is not None or end_at is not None:
+        if start_at is None or end_at is None:
+            raise HTTPException(status_code=400, detail="start_at and end_at must be provided together")
+        if month is not None and month.strip():
+            raise HTTPException(status_code=400, detail="month cannot be combined with start_at/end_at")
+        start = _to_utc(start_at)
+        end = _to_utc(end_at)
+        if end <= start:
+            raise HTTPException(status_code=400, detail="end_at must be greater than start_at")
+        month_key = f"{start.year:04d}-{start.month:02d}"
+    else:
+        start, end, month_key = _month_bounds(month)
+
     rows = db.execute(
         select(DashboardTask)
         .where(DashboardTask.scheduled_at >= start, DashboardTask.scheduled_at < end)
@@ -488,13 +546,19 @@ def get_dashboard_task_settings(
 ) -> DashboardTaskSettingsResponse:
     row = _get_task_settings_row(db)
     categories = _normalize_categories(row.categories_json)
+    holidays = _normalize_holidays(row.holidays_json)
+    list_range_past_days = _normalize_task_list_range_past_days(row.list_range_past_days)
+    list_range_future_months = _normalize_task_list_range_future_months(row.list_range_future_months)
     return DashboardTaskSettingsResponse(
         categories=categories,
         category_colors=_normalize_category_colors(row.category_colors_json, categories),
+        holidays=holidays,
         allow_all_day=bool(row.allow_all_day),
         use_location=bool(row.use_location),
         use_comment=bool(row.use_comment),
         default_time=row.default_time if _is_valid_time_hhmm(row.default_time) else "09:00",
+        list_range_past_days=list_range_past_days,
+        list_range_future_months=list_range_future_months,
         generated_at=_now(),
     )
 
@@ -507,17 +571,23 @@ def update_dashboard_task_settings(
 ) -> DashboardTaskSettingsResponse:
     categories = _normalize_categories(req.categories)
     category_colors = _normalize_category_colors(req.category_colors, categories)
+    holidays = _normalize_holidays(req.holidays)
     default_time = req.default_time.strip()
+    list_range_past_days = _normalize_task_list_range_past_days(req.list_range_past_days)
+    list_range_future_months = _normalize_task_list_range_future_months(req.list_range_future_months)
     if not _is_valid_time_hhmm(default_time):
         raise HTTPException(status_code=400, detail="default_time must be HH:MM")
 
     row = _get_task_settings_row(db)
     row.categories_json = categories
     row.category_colors_json = category_colors
+    row.holidays_json = holidays
     row.allow_all_day = bool(req.allow_all_day)
     row.use_location = bool(req.use_location)
     row.use_comment = bool(req.use_comment)
     row.default_time = default_time
+    row.list_range_past_days = list_range_past_days
+    row.list_range_future_months = list_range_future_months
     row.created_by = current_user.id
     row.updated_at = _now()
     db.add(row)
@@ -527,10 +597,13 @@ def update_dashboard_task_settings(
     return DashboardTaskSettingsResponse(
         categories=categories,
         category_colors=category_colors,
+        holidays=holidays,
         allow_all_day=bool(row.allow_all_day),
         use_location=bool(row.use_location),
         use_comment=bool(row.use_comment),
         default_time=row.default_time,
+        list_range_past_days=list_range_past_days,
+        list_range_future_months=list_range_future_months,
         generated_at=_now(),
     )
 

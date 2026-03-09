@@ -104,10 +104,13 @@ type DashboardTaskListResponse = {
 type DashboardTaskSettingsResponse = {
   categories: string[];
   category_colors: Record<string, string>;
+  holidays: Record<string, string>;
   allow_all_day: boolean;
   use_location: boolean;
   use_comment: boolean;
   default_time: string;
+  list_range_past_days: number;
+  list_range_future_months: number;
   generated_at: string;
 };
 
@@ -116,14 +119,22 @@ type TaskFilter = "ALL" | string;
 const WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"];
 const CATEGORY_COLOR_PALETTE = ["#059669", "#0284C7", "#7C3AED", "#EA580C", "#D9466F", "#0F766E", "#475569", "#7C2D12", "#166534"];
 const DEFAULT_CATEGORY_COLORS: Record<string, string> = { 할일: "#059669", 회의: "#0284C7" };
+const DEFAULT_TASK_LIST_RANGE_PAST_DAYS = 7;
+const DEFAULT_TASK_LIST_RANGE_FUTURE_MONTHS = 2;
+const MAX_TASK_LIST_RANGE_PAST_DAYS = 365;
+const MAX_TASK_LIST_RANGE_FUTURE_MONTHS = 24;
+const MAX_TASK_HOLIDAYS = 400;
 
 const DEFAULT_TASK_SETTINGS: DashboardTaskSettingsResponse = {
   categories: ["할일", "회의"],
   category_colors: { ...DEFAULT_CATEGORY_COLORS },
+  holidays: {},
   allow_all_day: true,
   use_location: true,
   use_comment: true,
   default_time: "09:00",
+  list_range_past_days: DEFAULT_TASK_LIST_RANGE_PAST_DAYS,
+  list_range_future_months: DEFAULT_TASK_LIST_RANGE_FUTURE_MONTHS,
   generated_at: "",
 };
 
@@ -228,11 +239,86 @@ function normalizeCategoryList(raw: string[]): string[] {
     seen.add(key);
     out.push(token.slice(0, 80));
   }
-  return out.length > 0 ? out : ["할일", "회의"];
+  const bounded = out.slice(0, 30);
+  return bounded.length > 0 ? bounded : ["할일", "회의"];
 }
 
 function isValidTime(value: string): boolean {
   return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
+function normalizeTaskListRangePastDays(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_TASK_LIST_RANGE_PAST_DAYS;
+  return clampInteger(parsed, 0, MAX_TASK_LIST_RANGE_PAST_DAYS);
+}
+
+function normalizeTaskListRangeFutureMonths(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_TASK_LIST_RANGE_FUTURE_MONTHS;
+  return clampInteger(parsed, 0, MAX_TASK_LIST_RANGE_FUTURE_MONTHS);
+}
+
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+}
+
+function addMonthsClamped(base: Date, months: number): Date {
+  const year = base.getFullYear();
+  const month = base.getMonth();
+  const day = base.getDate();
+  const firstOfTarget = new Date(year, month + months, 1, 0, 0, 0, 0);
+  const lastDay = new Date(firstOfTarget.getFullYear(), firstOfTarget.getMonth() + 1, 0).getDate();
+  return new Date(firstOfTarget.getFullYear(), firstOfTarget.getMonth(), Math.min(day, lastDay), 0, 0, 0, 0);
+}
+
+function buildTaskListRange(now: Date, pastDays: number, futureMonths: number): {
+  startDate: Date;
+  endDateInclusive: Date;
+  endDateExclusive: Date;
+} {
+  const today = startOfLocalDay(now);
+  const startDate = new Date(today);
+  startDate.setDate(startDate.getDate() - normalizeTaskListRangePastDays(pastDays));
+  const endDateInclusive = addMonthsClamped(today, normalizeTaskListRangeFutureMonths(futureMonths));
+  const endDateExclusive = new Date(endDateInclusive);
+  endDateExclusive.setDate(endDateExclusive.getDate() + 1);
+  return { startDate, endDateInclusive, endDateExclusive };
+}
+
+function normalizeHolidayDateKey(value: unknown): string | null {
+  const token = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(token)) return null;
+  const [year, month, day] = token.split("-").map((part) => Number(part));
+  const dt = new Date(year, month - 1, day);
+  if (dateKeyFromDate(dt) !== token) return null;
+  return token;
+}
+
+function normalizeHolidayName(value: unknown): string | null {
+  const token = String(value || "").trim();
+  if (!token) return null;
+  return token.slice(0, 80);
+}
+
+function normalizeHolidaysMap(raw: Record<string, unknown> | null | undefined): Record<string, string> {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const out: Record<string, string> = {};
+  for (const [rawDate, rawName] of Object.entries(source)) {
+    const dateKey = normalizeHolidayDateKey(rawDate);
+    const name = normalizeHolidayName(rawName);
+    if (!dateKey || !name) continue;
+    out[dateKey] = name;
+  }
+  const sorted = Object.entries(out)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(0, MAX_TASK_HOLIDAYS);
+  return Object.fromEntries(sorted);
 }
 
 function normalizeHexColor(value: string | null | undefined): string | null {
@@ -319,13 +405,23 @@ function loadLocalTaskSettings(): DashboardTaskSettingsResponse | null {
         : {},
       categories,
     );
+    const holidays = normalizeHolidaysMap(parsed.holidays && typeof parsed.holidays === "object" ? (parsed.holidays as Record<string, unknown>) : {});
     return {
       categories,
       category_colors: categoryColors,
+      holidays,
       allow_all_day: typeof parsed.allow_all_day === "boolean" ? parsed.allow_all_day : true,
       use_location: typeof parsed.use_location === "boolean" ? parsed.use_location : true,
       use_comment: typeof parsed.use_comment === "boolean" ? parsed.use_comment : true,
       default_time: defaultTime,
+      list_range_past_days:
+        parsed.list_range_past_days === undefined
+          ? DEFAULT_TASK_LIST_RANGE_PAST_DAYS
+          : normalizeTaskListRangePastDays(parsed.list_range_past_days),
+      list_range_future_months:
+        parsed.list_range_future_months === undefined
+          ? DEFAULT_TASK_LIST_RANGE_FUTURE_MONTHS
+          : normalizeTaskListRangeFutureMonths(parsed.list_range_future_months),
       generated_at: typeof parsed.generated_at === "string" ? parsed.generated_at : "",
     };
   } catch {
@@ -340,10 +436,13 @@ function saveLocalTaskSettings(settings: DashboardTaskSettingsResponse): void {
     JSON.stringify({
       categories: normalizeCategoryList(settings.categories || []),
       category_colors: normalizeCategoryColorMap(settings.category_colors || {}, normalizeCategoryList(settings.categories || [])),
+      holidays: normalizeHolidaysMap(settings.holidays || {}),
       allow_all_day: !!settings.allow_all_day,
       use_location: !!settings.use_location,
       use_comment: !!settings.use_comment,
       default_time: isValidTime(settings.default_time) ? settings.default_time : "09:00",
+      list_range_past_days: normalizeTaskListRangePastDays(settings.list_range_past_days),
+      list_range_future_months: normalizeTaskListRangeFutureMonths(settings.list_range_future_months),
       generated_at: settings.generated_at || new Date().toISOString(),
     }),
   );
@@ -356,9 +455,10 @@ export function DashboardSummary() {
   const [statsOpen, setStatsOpen] = useState(false);
 
   const [monthKey, setMonthKey] = useState(monthKeyFromDate(new Date()));
-  const [tasks, setTasks] = useState<DashboardTaskItem[]>([]);
-  const [tasksLoading, setTasksLoading] = useState(false);
-  const [tasksError, setTasksError] = useState("");
+  const [calendarTasks, setCalendarTasks] = useState<DashboardTaskItem[]>([]);
+  const [listTasks, setListTasks] = useState<DashboardTaskItem[]>([]);
+  const [listTasksLoading, setListTasksLoading] = useState(false);
+  const [listTasksError, setListTasksError] = useState("");
   const [taskFilter, setTaskFilter] = useState<TaskFilter>("ALL");
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
@@ -390,6 +490,16 @@ export function DashboardSummary() {
   const [settingsUseLocation, setSettingsUseLocation] = useState(true);
   const [settingsUseComment, setSettingsUseComment] = useState(true);
   const [settingsDefaultTime, setSettingsDefaultTime] = useState("09:00");
+  const [settingsListRangePastDays, setSettingsListRangePastDays] = useState(DEFAULT_TASK_LIST_RANGE_PAST_DAYS);
+  const [settingsListRangeFutureMonths, setSettingsListRangeFutureMonths] = useState(DEFAULT_TASK_LIST_RANGE_FUTURE_MONTHS);
+
+  const [calendarSettingsModalOpen, setCalendarSettingsModalOpen] = useState(false);
+  const [calendarSettingsSubmitting, setCalendarSettingsSubmitting] = useState(false);
+  const [calendarSettingsError, setCalendarSettingsError] = useState("");
+  const [calendarSettingsNotice, setCalendarSettingsNotice] = useState("");
+  const [calendarHolidays, setCalendarHolidays] = useState<Record<string, string>>(DEFAULT_TASK_SETTINGS.holidays);
+  const [calendarHolidayDate, setCalendarHolidayDate] = useState(dateKeyFromDate(new Date()));
+  const [calendarHolidayName, setCalendarHolidayName] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -426,7 +536,10 @@ export function DashboardSummary() {
         ...res,
         categories,
         category_colors: categoryColors,
+        holidays: normalizeHolidaysMap(res.holidays || {}),
         default_time: isValidTime(res.default_time) ? res.default_time : "09:00",
+        list_range_past_days: normalizeTaskListRangePastDays(res.list_range_past_days),
+        list_range_future_months: normalizeTaskListRangeFutureMonths(res.list_range_future_months),
       };
       setTaskSettingsApiSupported(true);
       setTaskSettings(normalized);
@@ -460,23 +573,51 @@ export function DashboardSummary() {
     void loadTaskSettings();
   }, [loadTaskSettings]);
 
-  const loadTasks = useCallback(async (targetMonth: string) => {
-    setTasksLoading(true);
-    setTasksError("");
+  const taskListWindow = useMemo(() => {
+    const range = buildTaskListRange(new Date(), taskSettings.list_range_past_days, taskSettings.list_range_future_months);
+    const startDateKey = dateKeyFromDate(range.startDate);
+    const endDateKey = dateKeyFromDate(range.endDateInclusive);
+    return {
+      ...range,
+      startDateKey,
+      endDateKey,
+      startAtIso: range.startDate.toISOString(),
+      endAtIso: range.endDateExclusive.toISOString(),
+      label: `${startDateKey} ~ ${endDateKey}`,
+    };
+  }, [taskSettings.list_range_future_months, taskSettings.list_range_past_days]);
+
+  const loadCalendarTasks = useCallback(async (targetMonth: string) => {
     try {
       const res = await apiGet<DashboardTaskListResponse>(`/dashboard/tasks?month=${encodeURIComponent(targetMonth)}`);
-      setTasks(res.items || []);
-    } catch (err) {
-      setTasksError(err instanceof Error ? err.message : "일정 목록 로드 실패");
-      setTasks([]);
-    } finally {
-      setTasksLoading(false);
+      setCalendarTasks(res.items || []);
+    } catch {
+      setCalendarTasks([]);
     }
   }, []);
 
   useEffect(() => {
-    void loadTasks(monthKey);
-  }, [loadTasks, monthKey]);
+    void loadCalendarTasks(monthKey);
+  }, [loadCalendarTasks, monthKey]);
+
+  const loadListTasks = useCallback(async (startAtIso: string, endAtIso: string) => {
+    setListTasksLoading(true);
+    setListTasksError("");
+    try {
+      const query = `start_at=${encodeURIComponent(startAtIso)}&end_at=${encodeURIComponent(endAtIso)}`;
+      const res = await apiGet<DashboardTaskListResponse>(`/dashboard/tasks?${query}`);
+      setListTasks(res.items || []);
+    } catch (err) {
+      setListTasksError(err instanceof Error ? err.message : "일정 목록 로드 실패");
+      setListTasks([]);
+    } finally {
+      setListTasksLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadListTasks(taskListWindow.startAtIso, taskListWindow.endAtIso);
+  }, [loadListTasks, taskListWindow.endAtIso, taskListWindow.startAtIso]);
 
   useEffect(() => {
     if (taskFilter === "ALL") return;
@@ -485,9 +626,16 @@ export function DashboardSummary() {
     }
   }, [taskFilter, taskSettings.categories]);
 
+  useEffect(() => {
+    if (!selectedDate) return;
+    if (selectedDate < taskListWindow.startDateKey || selectedDate > taskListWindow.endDateKey) {
+      setSelectedDate(null);
+    }
+  }, [selectedDate, taskListWindow.endDateKey, taskListWindow.startDateKey]);
+
   const tasksByDate = useMemo(() => {
     const map = new Map<string, DashboardTaskItem[]>();
-    for (const item of tasks) {
+    for (const item of calendarTasks) {
       const key = dateKeyFromDate(new Date(item.scheduled_at));
       const existing = map.get(key);
       if (existing) existing.push(item);
@@ -497,10 +645,10 @@ export function DashboardSummary() {
       arr.sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
     }
     return map;
-  }, [tasks]);
+  }, [calendarTasks]);
 
   const filteredTasks = useMemo(() => {
-    let arr = tasks;
+    let arr = listTasks;
     if (taskFilter !== "ALL") {
       arr = arr.filter((item) => item.category === taskFilter);
     }
@@ -508,7 +656,7 @@ export function DashboardSummary() {
       arr = arr.filter((item) => dateKeyFromDate(new Date(item.scheduled_at)) === selectedDate);
     }
     return [...arr].sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime());
-  }, [selectedDate, taskFilter, tasks]);
+  }, [selectedDate, taskFilter, listTasks]);
 
   const calendarCells = useMemo(() => buildCalendarCells(monthKey), [monthKey]);
   const taskFilterOptions = useMemo<TaskFilter[]>(() => ["ALL", ...taskSettings.categories], [taskSettings.categories]);
@@ -641,7 +789,10 @@ export function DashboardSummary() {
         await apiPost<DashboardTaskItem>("/dashboard/tasks", payload);
       }
       closeTaskModal();
-      await loadTasks(monthKey);
+      await Promise.all([
+        loadCalendarTasks(monthKey),
+        loadListTasks(taskListWindow.startAtIso, taskListWindow.endAtIso),
+      ]);
     } catch (err) {
       setTaskFormError(err instanceof Error ? err.message : editingTaskId ? "일정 수정 실패" : "일정 등록 실패");
     } finally {
@@ -659,6 +810,8 @@ export function DashboardSummary() {
     setSettingsUseLocation(taskSettings.use_location);
     setSettingsUseComment(taskSettings.use_comment);
     setSettingsDefaultTime(taskSettings.default_time || "09:00");
+    setSettingsListRangePastDays(normalizeTaskListRangePastDays(taskSettings.list_range_past_days));
+    setSettingsListRangeFutureMonths(normalizeTaskListRangeFutureMonths(taskSettings.list_range_future_months));
     setSettingsModalOpen(true);
   };
 
@@ -704,18 +857,24 @@ export function DashboardSummary() {
 
     const categories = normalizeCategoryList(settingsCategories);
     const categoryColors = normalizeCategoryColorMap(settingsCategoryColors, categories);
+    const preservedHolidays = normalizeHolidaysMap(taskSettings.holidays || {});
     if (!isValidTime(settingsDefaultTime.trim())) {
       setSettingsFormError("기본 시간은 HH:MM 형식이어야 합니다.");
       return;
     }
+    const listRangePastDays = normalizeTaskListRangePastDays(settingsListRangePastDays);
+    const listRangeFutureMonths = normalizeTaskListRangeFutureMonths(settingsListRangeFutureMonths);
 
     const localNext: DashboardTaskSettingsResponse = {
       categories,
       category_colors: categoryColors,
+      holidays: preservedHolidays,
       allow_all_day: settingsAllowAllDay,
       use_location: settingsUseLocation,
       use_comment: settingsUseComment,
       default_time: settingsDefaultTime.trim(),
+      list_range_past_days: listRangePastDays,
+      list_range_future_months: listRangeFutureMonths,
       generated_at: new Date().toISOString(),
     };
 
@@ -738,10 +897,13 @@ export function DashboardSummary() {
         body: JSON.stringify({
           categories,
           category_colors: categoryColors,
+          holidays: preservedHolidays,
           allow_all_day: settingsAllowAllDay,
           use_location: settingsUseLocation,
           use_comment: settingsUseComment,
           default_time: settingsDefaultTime.trim(),
+          list_range_past_days: listRangePastDays,
+          list_range_future_months: listRangeFutureMonths,
         }),
       });
       const nextCategories = normalizeCategoryList(next.categories || []);
@@ -749,11 +911,15 @@ export function DashboardSummary() {
         ...next,
         categories: nextCategories,
         category_colors: normalizeCategoryColorMap(next.category_colors || {}, nextCategories),
+        holidays: normalizeHolidaysMap(next.holidays || {}),
+        list_range_past_days: normalizeTaskListRangePastDays(next.list_range_past_days),
+        list_range_future_months: normalizeTaskListRangeFutureMonths(next.list_range_future_months),
       };
       setTaskSettings(normalized);
       setTaskCategory((prev) => (normalized.categories.includes(prev) ? prev : normalized.categories[0]));
       setTaskTime(normalized.default_time || "09:00");
       saveLocalTaskSettings(normalized);
+      await loadTaskSettings();
       setSettingsModalOpen(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : "설정 저장 실패";
@@ -765,12 +931,166 @@ export function DashboardSummary() {
         saveLocalTaskSettings(localNext);
         setSettingsFormNotice("서버 설정 API 미지원: 브라우저 로컬 설정으로 저장했습니다.");
         setSettingsModalOpen(false);
+      } else if (message.includes("403")) {
+        setSettingsFormError("설정 저장 권한이 없습니다. 관리자 또는 편집자 계정으로 로그인하세요.");
       } else {
         setSettingsFormError(message);
       }
     } finally {
       setSettingsSubmitting(false);
     }
+  };
+
+  const openCalendarSettingsModal = () => {
+    setCalendarSettingsError("");
+    setCalendarSettingsNotice("");
+    setCalendarHolidays(normalizeHolidaysMap(taskSettings.holidays || {}));
+    setCalendarHolidayDate(dateKeyFromDate(new Date()));
+    setCalendarHolidayName("");
+    setCalendarSettingsModalOpen(true);
+  };
+
+  const persistCalendarHolidays = async (
+    rawHolidays: Record<string, string>,
+    options?: { closeModalOnSuccess?: boolean; successNotice?: string },
+  ): Promise<boolean> => {
+    const closeModalOnSuccess = !!options?.closeModalOnSuccess;
+    const successNotice = options?.successNotice || "";
+    const holidays = normalizeHolidaysMap(rawHolidays);
+
+    setCalendarSettingsError("");
+    setCalendarSettingsNotice("");
+
+    const categories = normalizeCategoryList(taskSettings.categories || []);
+    const categoryColors = normalizeCategoryColorMap(taskSettings.category_colors || {}, categories);
+    const defaultTime = isValidTime(taskSettings.default_time) ? taskSettings.default_time : "09:00";
+    const listRangePastDays = normalizeTaskListRangePastDays(taskSettings.list_range_past_days);
+    const listRangeFutureMonths = normalizeTaskListRangeFutureMonths(taskSettings.list_range_future_months);
+
+    const localNext: DashboardTaskSettingsResponse = {
+      categories,
+      category_colors: categoryColors,
+      holidays,
+      allow_all_day: !!taskSettings.allow_all_day,
+      use_location: !!taskSettings.use_location,
+      use_comment: !!taskSettings.use_comment,
+      default_time: defaultTime,
+      list_range_past_days: listRangePastDays,
+      list_range_future_months: listRangeFutureMonths,
+      generated_at: new Date().toISOString(),
+    };
+
+    if (!taskSettingsApiSupported) {
+      setTaskSettings(localNext);
+      setCalendarHolidays(holidays);
+      saveLocalTaskSettings(localNext);
+      setCalendarSettingsNotice("서버 설정 API 미지원: 브라우저 로컬 설정으로 저장했습니다.");
+      if (closeModalOnSuccess) setCalendarSettingsModalOpen(false);
+      return true;
+    }
+
+    setCalendarSettingsSubmitting(true);
+    try {
+      const next = await apiFetch<DashboardTaskSettingsResponse>("/dashboard/task-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          categories,
+          category_colors: categoryColors,
+          holidays,
+          allow_all_day: localNext.allow_all_day,
+          use_location: localNext.use_location,
+          use_comment: localNext.use_comment,
+          default_time: defaultTime,
+          list_range_past_days: listRangePastDays,
+          list_range_future_months: listRangeFutureMonths,
+        }),
+      });
+      const nextCategories = normalizeCategoryList(next.categories || []);
+      const normalized: DashboardTaskSettingsResponse = {
+        ...next,
+        categories: nextCategories,
+        category_colors: normalizeCategoryColorMap(next.category_colors || {}, nextCategories),
+        holidays: normalizeHolidaysMap(next.holidays || {}),
+        default_time: isValidTime(next.default_time) ? next.default_time : "09:00",
+        list_range_past_days: normalizeTaskListRangePastDays(next.list_range_past_days),
+        list_range_future_months: normalizeTaskListRangeFutureMonths(next.list_range_future_months),
+      };
+      setTaskSettings(normalized);
+      setCalendarHolidays(normalized.holidays);
+      saveLocalTaskSettings(normalized);
+      if (successNotice) {
+        setCalendarSettingsNotice(successNotice);
+      }
+      if (closeModalOnSuccess) setCalendarSettingsModalOpen(false);
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "캘린더 설정 저장 실패";
+      if (message.includes("404")) {
+        setTaskSettingsApiSupported(false);
+        setTaskSettings(localNext);
+        setCalendarHolidays(holidays);
+        saveLocalTaskSettings(localNext);
+        setCalendarSettingsNotice("서버 설정 API 미지원: 브라우저 로컬 설정으로 저장했습니다.");
+        if (closeModalOnSuccess) setCalendarSettingsModalOpen(false);
+      } else if (message.includes("403")) {
+        setCalendarSettingsError("설정 저장 권한이 없습니다. 관리자 또는 편집자 계정으로 로그인하세요.");
+      } else {
+        setCalendarSettingsError(message);
+      }
+      return false;
+    } finally {
+      setCalendarSettingsSubmitting(false);
+    }
+  };
+
+  const addOrUpdateCalendarHoliday = async () => {
+    setCalendarSettingsError("");
+    setCalendarSettingsNotice("");
+    const dateKey = normalizeHolidayDateKey(calendarHolidayDate);
+    if (!dateKey) {
+      setCalendarSettingsError("휴일 날짜 형식이 올바르지 않습니다.");
+      return;
+    }
+    const holidayName = normalizeHolidayName(calendarHolidayName);
+    if (!holidayName) {
+      setCalendarSettingsError("휴일 이름을 입력하세요.");
+      return;
+    }
+    const nextHolidays = normalizeHolidaysMap({ ...calendarHolidays, [dateKey]: holidayName });
+    setCalendarHolidays(nextHolidays);
+    setCalendarHolidayName("");
+    await persistCalendarHolidays(nextHolidays, { successNotice: "휴일 설정을 저장했습니다." });
+  };
+
+  const removeCalendarHoliday = async (dateKey: string) => {
+    setCalendarSettingsError("");
+    setCalendarSettingsNotice("");
+    const next = { ...calendarHolidays };
+    delete next[dateKey];
+    const normalized = normalizeHolidaysMap(next);
+    setCalendarHolidays(normalized);
+    await persistCalendarHolidays(normalized, { successNotice: "휴일 설정을 저장했습니다." });
+  };
+
+  const submitCalendarSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setCalendarSettingsError("");
+    setCalendarSettingsNotice("");
+
+    let holidays = normalizeHolidaysMap(calendarHolidays);
+    const pendingHolidayName = normalizeHolidayName(calendarHolidayName);
+    if (pendingHolidayName) {
+      const pendingHolidayDate = normalizeHolidayDateKey(calendarHolidayDate);
+      if (!pendingHolidayDate) {
+        setCalendarSettingsError("휴일 날짜 형식이 올바르지 않습니다.");
+        return;
+      }
+      holidays = normalizeHolidaysMap({ ...holidays, [pendingHolidayDate]: pendingHolidayName });
+      setCalendarHolidayName("");
+    }
+    setCalendarHolidays(holidays);
+    await persistCalendarHolidays(holidays, { closeModalOnSuccess: true });
   };
 
   if (loading) {
@@ -894,7 +1214,7 @@ export function DashboardSummary() {
                 className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs hover:bg-stone-50"
               >
                 <Settings2 className="h-3.5 w-3.5" />
-                설정
+                일정 설정
               </button>
             </div>
           </div>
@@ -925,15 +1245,16 @@ export function DashboardSummary() {
               </button>
             ) : null}
           </div>
+          <p className="mt-2 text-[11px] text-stone-500">표시 기간: {taskListWindow.label}</p>
 
           {!taskSettingsApiSupported ? (
             <p className="mt-2 text-[11px] text-amber-700">설정 API 미지원 서버입니다. 카테고리/변수 설정은 이 브라우저에 로컬 저장됩니다.</p>
           ) : null}
           {taskSettingsLoading ? <p className="mt-2 text-xs text-stone-600">일정 설정 로딩 중...</p> : null}
           {taskSettingsError ? <p className="mt-2 text-xs text-red-700">설정 오류: {taskSettingsError}</p> : null}
-          {tasksError ? <p className="mt-2 text-xs text-red-700">일정 로드 실패: {tasksError}</p> : null}
-          {tasksLoading ? <p className="mt-2 text-sm text-stone-500">일정 목록 로딩 중...</p> : null}
-          {!tasksLoading ? (
+          {listTasksError ? <p className="mt-2 text-xs text-red-700">일정 로드 실패: {listTasksError}</p> : null}
+          {listTasksLoading ? <p className="mt-2 text-sm text-stone-500">일정 목록 로딩 중...</p> : null}
+          {!listTasksLoading ? (
             <ul className="mt-3 max-h-[28rem] space-y-2 overflow-y-auto pr-1">
               {filteredTasks.length === 0 ? <li className="text-sm text-stone-500">등록된 일정이 없습니다.</li> : null}
               {filteredTasks.map((item) => {
@@ -1010,6 +1331,23 @@ export function DashboardSummary() {
             <div className="inline-flex items-center gap-1">
               <button
                 type="button"
+                onClick={openCalendarSettingsModal}
+                className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs hover:bg-stone-50"
+                title="캘린더 설정"
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                캘린더 설정
+              </button>
+              <button
+                type="button"
+                onClick={() => setMonthKey(monthKeyFromDate(new Date()))}
+                className="inline-flex items-center gap-1 rounded border border-stone-300 bg-white px-2 py-1 text-xs hover:bg-stone-50"
+                title="오늘 월로 이동"
+              >
+                오늘
+              </button>
+              <button
+                type="button"
                 onClick={() => setMonthKey((prev) => moveMonthKey(prev, -1))}
                 className="rounded border border-stone-300 p-1 hover:bg-stone-50"
                 title="이전 달"
@@ -1041,30 +1379,38 @@ export function DashboardSummary() {
             ))}
             {calendarCells.map((cell, cellIndex) => {
               const dayTasks = tasksByDate.get(cell.dateKey) || [];
+              const holidayName = taskSettings.holidays?.[cell.dateKey] || "";
               const isToday = isTodayKey(cell.dateKey);
               const isSelected = selectedDate === cell.dateKey;
               const weekdayIndex = cellIndex % 7;
-              const weekendTextClass = weekdayIndex === 0 ? "text-rose-600" : weekdayIndex === 6 ? "text-blue-600" : "";
+              const weekendTextClass = holidayName
+                ? "text-rose-700"
+                : weekdayIndex === 0
+                  ? "text-rose-600"
+                  : weekdayIndex === 6
+                    ? "text-blue-600"
+                    : "";
+              const baseCellClass = cell.inMonth ? "bg-white" : "bg-stone-50 text-stone-400";
+              const holidayCellClass = holidayName ? "border-rose-300 bg-rose-50/90" : "border-stone-200";
               return (
                 <div
                   key={cell.dateKey}
-                  className={`min-h-[90px] rounded border p-1 ${
-                    cell.inMonth ? "bg-white" : "bg-stone-50 text-stone-400"
-                  } ${isToday ? "border-accent/70 ring-1 ring-accent/50" : "border-stone-200"} ${
-                    isSelected ? "shadow-[inset_0_0_0_1px_rgba(15,118,110,0.55)]" : ""
-                  }`}
+                  className={`min-h-[90px] rounded border p-1 ${baseCellClass} ${holidayCellClass} ${
+                    isToday ? "ring-1 ring-accent/50" : ""
+                  } ${isSelected ? "shadow-[inset_0_0_0_1px_rgba(15,118,110,0.55)]" : ""}`}
                 >
                   <div className="flex items-start justify-between">
                     <button
                       type="button"
                       onClick={() => setSelectedDate((prev) => (prev === cell.dateKey ? null : cell.dateKey))}
-                      className={`rounded px-1 text-[11px] font-semibold hover:bg-stone-100 ${weekendTextClass} ${isToday ? "text-accent" : ""}`}
+                      className={`rounded px-1 text-[11px] font-semibold hover:bg-stone-100 ${weekendTextClass} ${isToday && !holidayName ? "text-accent" : ""}`}
                       title={`${cell.dateKey} 필터`}
                     >
                       {cell.day}
                     </button>
                     {dayTasks.length > 0 ? <span className="text-[10px] text-stone-500">{dayTasks.length}</span> : null}
                   </div>
+                  {holidayName ? <p className="mt-0.5 truncate px-1 text-[10px] font-semibold text-rose-700" title={holidayName}>{holidayName}</p> : null}
                   <div className="mt-1 space-y-0.5">
                     {dayTasks.slice(0, 2).map((item) => (
                       <a
@@ -1341,6 +1687,31 @@ export function DashboardSummary() {
           </div>
 
           <div className="grid gap-2 sm:grid-cols-2">
+            <label className="space-y-1 text-xs">
+              <span className="text-stone-700">목록 시작 (오늘 기준 N일 전)</span>
+              <input
+                type="number"
+                min={0}
+                max={MAX_TASK_LIST_RANGE_PAST_DAYS}
+                className="w-full rounded border border-stone-300 px-2 py-1.5 text-sm"
+                value={settingsListRangePastDays}
+                onChange={(event) => setSettingsListRangePastDays(normalizeTaskListRangePastDays(event.target.value))}
+              />
+            </label>
+            <label className="space-y-1 text-xs">
+              <span className="text-stone-700">목록 종료 (오늘 기준 N개월 후)</span>
+              <input
+                type="number"
+                min={0}
+                max={MAX_TASK_LIST_RANGE_FUTURE_MONTHS}
+                className="w-full rounded border border-stone-300 px-2 py-1.5 text-sm"
+                value={settingsListRangeFutureMonths}
+                onChange={(event) => setSettingsListRangeFutureMonths(normalizeTaskListRangeFutureMonths(event.target.value))}
+              />
+            </label>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2">
             <label className="inline-flex items-center gap-2 rounded border border-stone-300 bg-stone-50 px-2 py-1.5 text-xs text-stone-700">
               <input type="checkbox" checked={settingsUseLocation} onChange={(event) => setSettingsUseLocation(event.target.checked)} />
               장소 필드 사용
@@ -1369,6 +1740,93 @@ export function DashboardSummary() {
               disabled={settingsSubmitting}
             >
               {settingsSubmitting ? "저장 중..." : "저장"}
+            </button>
+          </div>
+        </form>
+      </ModalShell>
+
+      <ModalShell
+        open={calendarSettingsModalOpen}
+        onClose={() => setCalendarSettingsModalOpen(false)}
+        title="캘린더 설정"
+        maxWidthClassName="max-w-lg"
+      >
+        <form className="space-y-3" onSubmit={(event) => void submitCalendarSettings(event)}>
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-stone-700">휴일</p>
+            <div className="grid gap-1.5 sm:grid-cols-3">
+              <input
+                type="date"
+                className="w-full rounded border border-stone-300 px-2 py-1.5 text-sm"
+                value={calendarHolidayDate}
+                onChange={(event) => setCalendarHolidayDate(event.target.value)}
+                disabled={calendarSettingsSubmitting}
+              />
+              <input
+                className="w-full rounded border border-stone-300 px-2 py-1.5 text-sm"
+                value={calendarHolidayName}
+                onChange={(event) => setCalendarHolidayName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  void addOrUpdateCalendarHoliday();
+                }}
+                placeholder="예: 신정"
+                maxLength={80}
+                disabled={calendarSettingsSubmitting}
+              />
+              <button
+                type="button"
+                className="inline-flex items-center justify-center gap-1 rounded border border-stone-300 bg-white px-2 py-1.5 text-xs hover:bg-stone-50"
+                onClick={() => void addOrUpdateCalendarHoliday()}
+                disabled={calendarSettingsSubmitting}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                추가/수정
+              </button>
+            </div>
+
+            <div className="max-h-40 space-y-1 overflow-y-auto rounded border border-stone-200 bg-white p-2">
+              {Object.keys(calendarHolidays).length === 0 ? <p className="text-xs text-stone-500">등록된 휴일이 없습니다.</p> : null}
+              {Object.entries(calendarHolidays)
+                .sort((a, b) => a[0].localeCompare(b[0]))
+                .map(([day, name]) => (
+                  <div key={day} className="flex items-center justify-between gap-2 rounded border border-stone-200 px-2 py-1.5">
+                    <p className="text-xs text-stone-700">
+                      <span className="font-mono">{day}</span> · <span className="font-semibold text-rose-700">{name}</span>
+                    </p>
+                    <button
+                      type="button"
+                      className="rounded p-0.5 hover:bg-black/10"
+                      onClick={() => void removeCalendarHoliday(day)}
+                      aria-label={`${day} 휴일 삭제`}
+                      disabled={calendarSettingsSubmitting}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+            </div>
+          </div>
+
+          {calendarSettingsError ? <p className="text-xs text-red-700">{calendarSettingsError}</p> : null}
+          {calendarSettingsNotice ? <p className="text-xs text-amber-700">{calendarSettingsNotice}</p> : null}
+
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              className="rounded border border-stone-300 px-3 py-1.5 text-xs hover:bg-stone-50"
+              onClick={() => setCalendarSettingsModalOpen(false)}
+              disabled={calendarSettingsSubmitting}
+            >
+              취소
+            </button>
+            <button
+              type="submit"
+              className="rounded bg-accent px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+              disabled={calendarSettingsSubmitting}
+            >
+              {calendarSettingsSubmitting ? "저장 중..." : "저장"}
             </button>
           </div>
         </form>

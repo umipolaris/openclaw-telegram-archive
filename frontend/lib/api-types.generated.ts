@@ -2257,38 +2257,8 @@ export interface components {
             category_colors?: {
                 [key: string]: string;
             };
-            /**
-             * Allow All Day
-             * @default true
-             */
-            allow_all_day: boolean;
-            /**
-             * Use Location
-             * @default true
-             */
-            use_location: boolean;
-            /**
-             * Use Comment
-             * @default true
-             */
-            use_comment: boolean;
-            /**
-             * Default Time
-             * @default 09:00
-             */
-            default_time: string;
-            /**
-             * Generated At
-             * Format: date-time
-             */
-            generated_at: string;
-        };
-        /** DashboardTaskSettingsUpdateRequest */
-        DashboardTaskSettingsUpdateRequest: {
-            /** Categories */
-            categories?: string[];
-            /** Category Colors */
-            category_colors?: {
+            /** Holidays */
+            holidays?: {
                 [key: string]: string;
             };
             /**
@@ -2311,6 +2281,64 @@ export interface components {
              * @default 09:00
              */
             default_time: string;
+            /**
+             * List Range Past Days
+             * @default 7
+             */
+            list_range_past_days: number;
+            /**
+             * List Range Future Months
+             * @default 2
+             */
+            list_range_future_months: number;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+        };
+        /** DashboardTaskSettingsUpdateRequest */
+        DashboardTaskSettingsUpdateRequest: {
+            /** Categories */
+            categories?: string[];
+            /** Category Colors */
+            category_colors?: {
+                [key: string]: string;
+            };
+            /** Holidays */
+            holidays?: {
+                [key: string]: string;
+            };
+            /**
+             * Allow All Day
+             * @default true
+             */
+            allow_all_day: boolean;
+            /**
+             * Use Location
+             * @default true
+             */
+            use_location: boolean;
+            /**
+             * Use Comment
+             * @default true
+             */
+            use_comment: boolean;
+            /**
+             * Default Time
+             * @default 09:00
+             */
+            default_time: string;
+            /**
+             * List Range Past Days
+             * @default 7
+             */
+            list_range_past_days: number;
+            /**
+             * List Range Future Months
+             * @default 2
+             */
+            list_range_future_months: number;
         };
         /** DashboardTaskUpdateRequest */
         DashboardTaskUpdateRequest: {
@@ -4418,6 +4446,10 @@ export interface operations {
             query?: {
                 /** @description YYYY-MM */
                 month?: string | null;
+                /** @description ISO8601 datetime (inclusive) */
+                start_at?: string | null;
+                /** @description ISO8601 datetime (exclusive) */
+                end_at?: string | null;
             };
             header?: never;
             path?: never;
